@@ -1,0 +1,23 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+
+# 下载的工具链与大文件（tools/build_apk.py 会自动准备）
+downloads/
+tools/jdk/
+tools/android/
+
+# 构建产物
+dist/
+android/out/
+android/apk_build/
+android/*.apk
+build/
+
+# 引擎二进制（tools/get_engines.py 自动下载；Stockfish 为 GPL，体积大不入库）
+engines/
+
+# 杂项
+*.log
+.DS_Store

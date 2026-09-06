@@ -1,0 +1,129 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>stfchess — 国际象棋棋步棋局分析</title>
+<link rel="stylesheet" href="/static/style.css?v=3">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>♞</text></svg>">
+</head>
+<body>
+<div id="app">
+  <header>
+    <span class="logo">♞</span>
+    <h1>stfchess 棋局分析</h1>
+    <span class="engine-name" id="engine-name">…</span>
+    <span class="spacer"></span>
+    <span id="conn">连接中…</span>
+  </header>
+
+  <div id="main">
+    <!-- 中列：棋盘（评估条横放于棋盘上方） -->
+    <div id="left">
+      <div id="evalbar">
+        <div id="evalfill" style="width:50%"></div>
+        <div id="evaltext">0.00</div>
+      </div>
+      <div id="boardwrap">
+        <div id="board"></div>
+        <div id="coords"></div>
+        <svg id="hintsvg" viewBox="0 0 8 8"></svg>
+        <div id="promo" hidden></div>
+      </div>
+
+      <div id="nav">
+        <button id="btn-start" title="回到开局">⏮</button>
+        <button id="btn-prev" title="上一步 (←)">◀</button>
+        <button id="btn-next" title="下一步 (→)">▶</button>
+        <button id="btn-end" title="到最后一步">⏭</button>
+        <span id="stepinfo" style="color:var(--muted);font-size:12px;margin-left:6px;"></span>
+      </div>
+
+      <div id="controls">
+        <button id="btn-new" class="primary">新对局</button>
+        <button id="btn-undo">悔棋</button>
+        <button id="btn-flip">翻转棋盘</button>
+        <button id="btn-hint" class="gold">提示</button>
+        <button id="btn-engine-move" class="gold">引擎走棋</button>
+        <label class="chk"><input type="checkbox" id="chk-vs-engine">人机对弈</label>
+        <label class="chk"><input type="checkbox" id="chk-badge" checked>实时评价</label>
+        <label class="chk"><input type="checkbox" id="chk-sound" checked>音效</label>
+        <select id="engine-side" title="引擎执子">
+          <option value="b" selected>引擎执黑</option>
+          <option value="w">引擎执白</option>
+        </select>
+        <select id="engine-level" title="引擎棋力">
+          <option value="1">入门</option>
+          <option value="2" selected>业余</option>
+          <option value="3">大师</option>
+          <option value="4">特级</option>
+        </select>
+        <select id="depth" title="分析深度">
+          <option value="8">快速 (深度8)</option>
+          <option value="12" selected>标准 (深度12)</option>
+          <option value="16">深入 (深度16)</option>
+          <option value="20">极深 (深度20)</option>
+        </select>
+      </div>
+
+      <div id="status"></div>
+    </div>
+
+    <!-- 右列：分析面板 -->
+    <div id="right">
+      <section class="panel" id="panel-engine">
+        <h2>引擎评估</h2>
+        <div id="lines">
+          <div id="evalhint">走子或导入棋局后自动显示引擎评估（前 3 条变着）。</div>
+        </div>
+      </section>
+
+      <section class="panel" id="panel-pgn">
+        <h2>棋局导入 / 导出</h2>
+        <div id="pgn-area">
+          <textarea id="pgn" placeholder="在此粘贴 PGN 棋谱（含或不含表头均可），例如：&#10;1. e4 e5 2. Nf3 Nc6 3. Bb5 a6 …"></textarea>
+        </div>
+        <div id="pgn-btns">
+          <button id="btn-import-pgn" class="primary">导入 PGN</button>
+          <button id="btn-analyze-game" class="gold">分析整局</button>
+          <button id="btn-export-pgn">导出带评注 PGN</button>
+          <button id="btn-demo">载入示例棋局</button>
+        </div>
+        <div id="fen-row">
+          <input type="text" id="fen" placeholder="粘贴 FEN 局面，如 rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1">
+          <button id="btn-load-fen">载入 FEN</button>
+        </div>
+        <div id="jobprogress"><div></div></div>
+        <div id="jobtext"></div>
+      </section>
+
+      <section class="panel" id="panel-accuracy">
+        <h2>对局质量</h2>
+        <div id="accuracy">
+          <div class="acc-side" id="acc-w">
+            <div class="who">白方准确率</div>
+            <div class="val">–</div>
+            <div class="acc-counts"></div>
+          </div>
+          <div class="acc-side" id="acc-b">
+            <div class="who">黑方准确率</div>
+            <div class="val">–</div>
+            <div class="acc-counts"></div>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel" id="panel-moves">
+        <h2>棋谱与分析</h2>
+        <div id="movelist"></div>
+        <div id="graphwrap">
+          <svg id="graph" preserveAspectRatio="none"></svg>
+          <div id="graphtip"></div>
+        </div>
+      </section>
+    </div>
+  </div>
+</div>
+<script src="/static/app.js?v=11"></script>
+</body>
+</html>
