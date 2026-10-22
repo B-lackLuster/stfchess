@@ -10,15 +10,17 @@ function deferred() {
 }
 function app() {
   const nodes = new Map();
+  const handlers = {};
   const node = id => {
     if (!nodes.has(id)) nodes.set(id, {style:{},hidden:true,value:'12',textContent:'',innerHTML:'',remove(){},
-      classList:{toggle(){},add(){},remove(){}},querySelector:()=>node('child'),
+      classList:{toggle(){},add(){},remove(){}},addEventListener(){},querySelector:()=>node('child'),
       querySelectorAll:()=>[],selectedOptions:[{text:'业余'}]});
     return nodes.get(id);
   };
   const ctx = vm.createContext({
-    console, AbortController, Map, localStorage:{getItem:()=>null}, window:{},
-    document:{querySelector:node,querySelectorAll:()=>[]},
+    console, AbortController, Map, localStorage:{getItem:()=>null}, window:{addEventListener(){}},
+    document:{querySelector:selector=>selector==='.modal:not([hidden])' ? null : node(selector),querySelectorAll:()=>[],
+      addEventListener:(event,handler)=>{handlers[event]=handler;}},
     setTimeout:(fn)=>setImmediate(fn),clearTimeout:clearImmediate,
   });
   vm.runInContext(fs.readFileSync('static/app.js','utf8').replace(/init\(\);\s*$/, ''), ctx);
@@ -27,7 +29,7 @@ function app() {
     refreshLegal = async () => true; scheduleAnalyze = () => {};
     selectPanel = () => {}; S.badgeOn = false;
   `, ctx);
-  return {ctx, run:code=>vm.runInContext(code,ctx),node};
+  return {ctx, run:code=>vm.runInContext(code,ctx),node,handlers};
 }
 
 test('late user and engine moves cannot modify a replacement game',async()=>{
@@ -88,4 +90,16 @@ test('cancelled polling cannot merge an old report into a new game',async()=>{
   pending.resolve({status:'done',result:{moves:[]},total:1,done:1});
   await action;
   assert.equal(ctx.merged.length,0);
+});
+
+test('arrow shortcuts still work after focusing a navigation button',()=>{
+  const {ctx,run,handlers} = app();
+  ctx.cursors=[];
+  run('setCursor = cursor => cursors.push(cursor); S.cursor=2; bindEvents()');
+  let prevented=false;
+  handlers.keydown({key:'ArrowLeft',target:{tagName:'BUTTON'},preventDefault(){prevented=true;}});
+  assert.deepEqual(ctx.cursors,[1]);
+  assert.equal(prevented,true);
+  handlers.keydown({key:'ArrowLeft',target:{tagName:'SELECT'},preventDefault(){}});
+  assert.deepEqual(ctx.cursors,[1]);
 });

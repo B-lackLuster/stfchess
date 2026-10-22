@@ -184,7 +184,7 @@ function openModal(id) {
   document.body.classList.add("modal-open");
   $("#app").setAttribute("aria-hidden", "true");
   const modal = document.getElementById(id);
-  modal.querySelector("textarea, select, button").focus();
+  (modal.querySelector("textarea, select") || modal.querySelector("button")).focus();
 }
 function closeModal() {
   document.querySelectorAll(".modal").forEach((el) => { el.hidden = true; });
@@ -1230,7 +1230,7 @@ function bindEvents() {
       return;
     }
     if (ev.key === "Escape") { $("#promo").hidden = true; cancelDrag(); S.sel = null; renderBoard(); }
-    if (["TEXTAREA", "INPUT", "SELECT", "BUTTON"].includes(ev.target.tagName) || ev.target.isContentEditable) return;
+    if (["TEXTAREA", "INPUT", "SELECT"].includes(ev.target.tagName) || ev.target.isContentEditable) return;
     if (["ArrowLeft", "ArrowRight", "Home", "End"].includes(ev.key)) ev.preventDefault();
     if (ev.key === "ArrowLeft") setCursor(S.cursor - 1);
     if (ev.key === "ArrowRight") setCursor(S.cursor + 1);
