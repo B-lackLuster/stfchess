@@ -8,6 +8,7 @@ import math
 from typing import Callable, Optional
 
 import chess
+import chess.engine
 import chess.pgn
 
 MATE_CP = 100_000  # 杀棋在数值比较中折算的厘兵值
@@ -52,9 +53,9 @@ def cp_white_pov(cp: int, turn: chess.Color) -> int:
 def cp_to_display(cp_white: int) -> str:
     """白方视角厘兵值 → 展示文本，如 +0.35 / -1.20 / #5 / #-3。"""
     if cp_white >= MATE_CP - 1000:
-        return f"#{MATE_CP - cp_white + 1}"
+        return f"#{MATE_CP - cp_white}"
     if cp_white <= -(MATE_CP - 1000):
-        return f"#-{MATE_CP + cp_white + 1}"
+        return f"#-{MATE_CP + cp_white}"
     return f"{cp_white / 100:+.2f}"
 
 
@@ -93,6 +94,10 @@ def analyse_position(
     cap_seconds: float,
 ) -> dict:
     """分析单个局面（当前行棋方视角），返回最佳着法与评分。"""
+    if board.is_game_over():
+        cp = -MATE_CP if board.is_checkmate() else 0
+        return {"best_uci": None, "best_san": None, "cp_pov": cp,
+                "cp_white": cp_white_pov(cp, board.turn), "depth": 0, "pv_san": []}
     limit = chess.engine.Limit(depth=depth, time=cap_seconds)
     info = engine.analyse(board, limit, multipv=1)
     if isinstance(info, list):  # python-chess 在 multipv 模式下返回列表
@@ -189,7 +194,7 @@ def analyse_game(
             "accuracy": round(acc, 1),
             "eval_white_after": opp["cp_white"],
             "best_san": best["best_san"],
-            "best_score": cp_to_display(best["cp_white"] if color == chess.WHITE else -best["cp_white"]),
+            "best_score": cp_to_display(best["cp_white"]),
             "played_score": cp_to_display(opp["cp_white"]),
             "pv_san": best["pv_san"],
         })
@@ -244,15 +249,15 @@ def parse_pgn(text: str) -> dict:
     if game is None:
         raise ScoreError("PGN 为空或格式无效")
     if game.errors:
-        # 尽量容忍：只有当主线一条着法都没有时才报错
-        first = next(game.mainline_moves(), None)
-        if first is None:
-            raise ScoreError(f"PGN 解析失败: {game.errors[0]}")
+        raise ScoreError(f"PGN 解析失败: {game.errors[0]}")
 
     board = game.board()
+    if not board.is_valid():
+        raise ScoreError("PGN 初始局面无效")
     headers = {k: v for k, v in game.headers.items()}
     moves = []
     for mv in game.mainline_moves():
+        color = board.turn
         san = board.san(mv)
         capture = board.is_capture(mv)
         check = board.gives_check(mv)
@@ -263,12 +268,11 @@ def parse_pgn(text: str) -> dict:
             "fen_after": board.fen(),
             "capture": capture,
             "check": check,
-            "color": "w" if (len(moves) % 2 == 0) else "b",
+            "color": "w" if color == chess.WHITE else "b",
         })
-    fen = game.headers.get("FEN") if game.headers.get("SetUp") == "1" else None
     return {
         "headers": headers,
-        "initial_fen": fen or chess.STARTING_FEN,
+        "initial_fen": game.board().fen(),
         "moves": moves,
         "over": board.is_game_over(),
         "result": headers.get("Result", "*"),
@@ -303,13 +307,13 @@ def export_pgn(
             nag = CLASS_NAG.get(an["cls"], 0)
             if nag:
                 node.nags.add(nag)
-            parts = [f"%eval {cp_to_display(an.get('eval_white_after', 0))}"]
+            parts = []
             if an.get("best_san") and an["best_san"] != an.get("san"):
                 parts.append(f"最佳: {an['best_san']} ({an.get('best_score', '')})")
             loss = an.get("cp_loss") or 0
             parts.append("送杀" if loss > 90000 else f"损失 {loss}厘兵")
             cls = CLASS_LABELS.get(an["cls"], "")
-            node.comment = f"[{cls} {' '.join(parts)}]"
+            node.comment = f"[%eval {cp_to_display(an.get('eval_white_after', 0))}] {cls} {' '.join(parts)}"
     return str(game)
 
 

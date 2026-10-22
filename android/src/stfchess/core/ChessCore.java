@@ -232,6 +232,10 @@ public class ChessCore {
         out.put("moves", arr);
         out.put("turn", board.getSideToMove() == Side.WHITE ? "w" : "b");
         out.put("check_sq", kingSq == null ? JSONObject.NULL : sq(kingSq));
+        String[] status = gameStatus(board);
+        out.put("over", Boolean.parseBoolean(status[0]));
+        out.put("result", status[1] == null ? JSONObject.NULL : status[1]);
+        out.put("reason", status[2] == null ? JSONObject.NULL : status[2]);
         return out;
     }
 
@@ -298,9 +302,9 @@ public class ChessCore {
     }
 
     public static String cpToDisplay(int cpWhite) {
-        if (cpWhite >= MATE_CP - 1000) return "#" + (MATE_CP - cpWhite + 1);
-        if (cpWhite <= -(MATE_CP - 1000)) return "#-" + (MATE_CP + cpWhite + 1);
-        return String.format("%+.2f", cpWhite / 100.0);
+        if (cpWhite >= MATE_CP - 1000) return "#" + (MATE_CP - cpWhite);
+        if (cpWhite <= -(MATE_CP - 1000)) return "#-" + (MATE_CP + cpWhite);
+        return String.format(java.util.Locale.ROOT, "%+.2f", cpWhite / 100.0);
     }
 
     /** 把 pv（UCI 序列）转成 SAN 序列。 */
@@ -329,7 +333,9 @@ public class ChessCore {
 
     public static JSONObject analyze(String fen, int depth, int multipv, double capSeconds,
                                      UciEngine engine) throws Exception {
-        List<UciEngine.Line> lines = engine.analyse(fen, depth, (int) (capSeconds * 1000), multipv);
+        Board board = new Board();
+        board.loadFromFen(fen);
+        List<UciEngine.Line> lines = positionLines(board, depth, capSeconds, multipv, engine);
         boolean whiteToMove = fen.split(" ").length > 1 && fen.split(" ")[1].startsWith("w");
         JSONArray arr = new JSONArray();
         for (UciEngine.Line ln : lines) {
@@ -352,6 +358,16 @@ public class ChessCore {
         out.put("lines", arr);
         out.put("turn", whiteToMove ? "w" : "b");
         return out;
+    }
+
+    private static List<UciEngine.Line> positionLines(Board board, int depth, double cap,
+                                                     int multipv, UciEngine engine) throws Exception {
+        if (Boolean.parseBoolean(gameStatus(board)[0])) {
+            UciEngine.Line terminal = new UciEngine.Line();
+            terminal.cpPov = board.isMated() ? -MATE_CP : 0;
+            return java.util.Collections.singletonList(terminal);
+        }
+        return engine.analyse(board.getFen(), depth, (int) (cap * 1000), multipv);
     }
 
     /* ---------------- API: 整局分析 ---------------- */
@@ -394,7 +410,7 @@ public class ChessCore {
                 return c;
             }
             Board b = boardAfter(initialFen, moves, p);
-            List<UciEngine.Line> lines = engine.analyse(b.getFen(), depth, (int) (cap * 1000), 1);
+            List<UciEngine.Line> lines = positionLines(b, depth, cap, 1, engine);
             pos.add(lines.isEmpty() ? new UciEngine.Line() : lines.get(0));
             ctl.progress(p + 1, n + 1);
         }
@@ -442,7 +458,7 @@ public class ChessCore {
             o.put("accuracy", Math.round(acc * 10.0) / 10.0);
             o.put("eval_white_after", afterCpWhite);
             o.put("best_san", bestSan == null ? JSONObject.NULL : bestSan);
-            o.put("best_score", cpToDisplay(white ? bestCpWhite : -bestCpWhite));
+            o.put("best_score", cpToDisplay(bestCpWhite));
             o.put("played_score", cpToDisplay(afterCpWhite));
             JSONArray pvSan = new JSONArray();
             List<String> pvs = best.pvUci == null ? new ArrayList<>()
@@ -534,14 +550,17 @@ public class ChessCore {
                                    JSONArray analysis, String engineName) throws Exception {
         StringBuilder sb = new StringBuilder();
         java.util.Set<String> skip = new java.util.HashSet<>();
-        skip.add("FEN"); skip.add("SetUp");
+        skip.add("FEN"); skip.add("SetUp"); skip.add("Annotator");
         if (headers != null && headers.length() > 0) {
             for (String k : headers.keySet()) {
                 if (!skip.contains(k)) sb.append("[").append(k).append(" \"")
-                        .append(headers.getString(k)).append("\"]").append("\n");
+                        .append(escapeHeader(headers.getString(k))).append("\"]").append("\n");
             }
         }
-        sb.append("[Annotator \"").append(engineName).append(" 棋局分析\"]\n\n");
+        if (!START_FEN.equals(initialFen)) {
+            sb.append("[SetUp \"1\"]\n[FEN \"").append(escapeHeader(initialFen)).append("\"]\n");
+        }
+        sb.append("[Annotator \"").append(escapeHeader(engineName)).append(" 棋局分析\"]\n\n");
 
         Board board = new Board();
         board.loadFromFen(initialFen);
@@ -564,7 +583,7 @@ public class ChessCore {
                 Integer nag = CLASS_NAG.get(cls);
                 if (nag != null && nag != 0) sb.append(" $").append(nag);
                 StringBuilder cm = new StringBuilder();
-                cm.append("%eval ").append(cpToDisplay(an.optInt("eval_white_after", 0)));
+                cm.append("[%eval ").append(cpToDisplay(an.optInt("eval_white_after", 0))).append("]");
                 String bestSan = an.optString("best_san", null);
                 if (bestSan != null && !bestSan.isEmpty() && !bestSan.equals(an.optString("san", ""))) {
                     cm.append(" 最佳: ").append(bestSan).append(" (")
@@ -572,8 +591,8 @@ public class ChessCore {
                 }
                 int loss = an.optInt("cp_loss", 0);
                 cm.append(loss > 90000 ? " 送杀" : " 损失 " + loss + "厘兵");
-                sb.append(" {[").append(CLASS_LABEL.getOrDefault(cls, "")).append(" ")
-                        .append(cm).append("]}");
+                sb.append(" {").append(cm).append(" ").append(CLASS_LABEL.getOrDefault(cls, ""))
+                        .append("}");
             }
             sb.append(" ");
             board.doMove(mv);
@@ -583,5 +602,9 @@ public class ChessCore {
         if (headers != null && headers.has("Result")) sb.append(headers.getString("Result"));
         sb.append("\n");
         return sb.toString();
+    }
+
+    private static String escapeHeader(String value) {
+        return value.replace("\\", "\\\\").replace("\"", "\\\"").replace("\n", " ").replace("\r", " ");
     }
 }

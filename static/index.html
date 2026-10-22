@@ -1,129 +1,337 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="zh-CN">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>stfchess — 国际象棋棋步棋局分析</title>
-<link rel="stylesheet" href="/static/style.css?v=3">
-<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>♞</text></svg>">
-</head>
-<body>
-<div id="app">
-  <header>
-    <span class="logo">♞</span>
-    <h1>stfchess 棋局分析</h1>
-    <span class="engine-name" id="engine-name">…</span>
-    <span class="spacer"></span>
-    <span id="conn">连接中…</span>
-  </header>
-
-  <div id="main">
-    <!-- 中列：棋盘（评估条横放于棋盘上方） -->
-    <div id="left">
-      <div id="evalbar">
-        <div id="evalfill" style="width:50%"></div>
-        <div id="evaltext">0.00</div>
-      </div>
-      <div id="boardwrap">
-        <div id="board"></div>
-        <div id="coords"></div>
-        <svg id="hintsvg" viewBox="0 0 8 8"></svg>
-        <div id="promo" hidden></div>
-      </div>
-
-      <div id="nav">
-        <button id="btn-start" title="回到开局">⏮</button>
-        <button id="btn-prev" title="上一步 (←)">◀</button>
-        <button id="btn-next" title="下一步 (→)">▶</button>
-        <button id="btn-end" title="到最后一步">⏭</button>
-        <span id="stepinfo" style="color:var(--muted);font-size:12px;margin-left:6px;"></span>
-      </div>
-
-      <div id="controls">
-        <button id="btn-new" class="primary">新对局</button>
-        <button id="btn-undo">悔棋</button>
-        <button id="btn-flip">翻转棋盘</button>
-        <button id="btn-hint" class="gold">提示</button>
-        <button id="btn-engine-move" class="gold">引擎走棋</button>
-        <label class="chk"><input type="checkbox" id="chk-vs-engine">人机对弈</label>
-        <label class="chk"><input type="checkbox" id="chk-badge" checked>实时评价</label>
-        <label class="chk"><input type="checkbox" id="chk-sound" checked>音效</label>
-        <select id="engine-side" title="引擎执子">
-          <option value="b" selected>引擎执黑</option>
-          <option value="w">引擎执白</option>
-        </select>
-        <select id="engine-level" title="引擎棋力">
-          <option value="1">入门</option>
-          <option value="2" selected>业余</option>
-          <option value="3">大师</option>
-          <option value="4">特级</option>
-        </select>
-        <select id="depth" title="分析深度">
-          <option value="8">快速 (深度8)</option>
-          <option value="12" selected>标准 (深度12)</option>
-          <option value="16">深入 (深度16)</option>
-          <option value="20">极深 (深度20)</option>
-        </select>
-      </div>
-
-      <div id="status"></div>
-    </div>
-
-    <!-- 右列：分析面板 -->
-    <div id="right">
-      <section class="panel" id="panel-engine">
-        <h2>引擎评估</h2>
-        <div id="lines">
-          <div id="evalhint">走子或导入棋局后自动显示引擎评估（前 3 条变着）。</div>
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#f5f4ef" />
+    <title>stfchess · 棋局研究室</title>
+    <link rel="stylesheet" href="/static/style.css?v=4" />
+    <link rel="icon" href="/static/icon.png" />
+  </head>
+  <body>
+    <div id="app">
+      <header class="app-header">
+        <a class="brand" href="/" aria-label="stfchess 首页"
+          ><span class="logo">♞</span
+          ><span>stfchess<small>棋局研究室</small></span></a
+        >
+        <div class="connection">
+          <span id="conn" role="status">连接中</span
+          ><span id="engine-name">Stockfish</span>
         </div>
-      </section>
-
-      <section class="panel" id="panel-pgn">
-        <h2>棋局导入 / 导出</h2>
-        <div id="pgn-area">
-          <textarea id="pgn" placeholder="在此粘贴 PGN 棋谱（含或不含表头均可），例如：&#10;1. e4 e5 2. Nf3 Nc6 3. Bb5 a6 …"></textarea>
+        <div class="header-actions">
+          <button data-open="import-modal">↥ <span>导入棋局</span></button
+          ><button data-open="settings-modal" aria-label="打开设置">
+            ⚙ <span>设置</span>
+          </button>
         </div>
-        <div id="pgn-btns">
-          <button id="btn-import-pgn" class="primary">导入 PGN</button>
-          <button id="btn-analyze-game" class="gold">分析整局</button>
-          <button id="btn-export-pgn">导出带评注 PGN</button>
-          <button id="btn-demo">载入示例棋局</button>
-        </div>
-        <div id="fen-row">
-          <input type="text" id="fen" placeholder="粘贴 FEN 局面，如 rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1">
-          <button id="btn-load-fen">载入 FEN</button>
-        </div>
-        <div id="jobprogress"><div></div></div>
-        <div id="jobtext"></div>
-      </section>
-
-      <section class="panel" id="panel-accuracy">
-        <h2>对局质量</h2>
-        <div id="accuracy">
-          <div class="acc-side" id="acc-w">
-            <div class="who">白方准确率</div>
-            <div class="val">–</div>
-            <div class="acc-counts"></div>
+      </header>
+      <main id="main">
+        <section id="left" aria-label="棋盘工作区">
+          <div class="workspace-heading">
+            <div>
+              <p class="eyebrow">YOUR NEXT MOVE</p>
+              <h1>专注每一步。</h1>
+            </div>
+            <button id="btn-new">＋ 新对局</button>
           </div>
-          <div class="acc-side" id="acc-b">
-            <div class="who">黑方准确率</div>
-            <div class="val">–</div>
-            <div class="acc-counts"></div>
+          <div class="mode-switch" role="group" aria-label="对局模式">
+            <button id="mode-analysis" class="active" aria-pressed="true">
+              自由分析</button
+            ><button id="mode-play" aria-pressed="false">人机对弈</button
+            ><span id="mode-caption">探索局面，找到更好的着法</span>
           </div>
-        </div>
-      </section>
-
-      <section class="panel" id="panel-moves">
-        <h2>棋谱与分析</h2>
-        <div id="movelist"></div>
-        <div id="graphwrap">
-          <svg id="graph" preserveAspectRatio="none"></svg>
-          <div id="graphtip"></div>
-        </div>
-      </section>
+          <div class="player-strip">
+            <span class="player-avatar" id="top-avatar">♟</span>
+            <div>
+              <strong id="top-player">黑方</strong
+              ><small id="top-detail">自由分析</small>
+            </div>
+            <span class="side-tag" id="top-side">BLACK</span>
+          </div>
+          <div id="evalbar" aria-label="白方优势评估">
+            <div id="evalfill" style="width: 50%"></div>
+            <div id="evaltext">—</div>
+          </div>
+          <div id="boardwrap">
+            <div id="board" aria-label="国际象棋棋盘"></div>
+            <div id="coords"></div>
+            <svg id="hintsvg" viewBox="0 0 8 8" aria-hidden="true"></svg>
+            <div id="promo" hidden role="group" aria-label="选择升变棋子"></div>
+          </div>
+          <div class="player-strip bottom-player">
+            <span class="player-avatar white" id="bottom-avatar">♟</span>
+            <div>
+              <strong id="bottom-player">白方</strong
+              ><small id="bottom-detail">自由分析</small>
+            </div>
+            <span id="status" role="status" aria-live="polite"></span>
+          </div>
+          <div class="board-toolbar">
+            <div id="controls">
+              <button id="btn-undo" title="撤销最后的着法">↶ 悔棋</button
+              ><button id="btn-flip">⇅ 翻转</button
+              ><button id="btn-hint">◇ 提示</button
+              ><button id="btn-engine-move">♞ 引擎走棋</button>
+            </div>
+            <span class="keyboard-hint">← → 浏览棋谱</span>
+          </div>
+        </section>
+        <aside id="right" aria-label="棋局面板">
+          <div class="study-heading">
+            <span class="eyebrow">ANALYSIS DESK</span
+            ><span class="live-dot">本地分析</span>
+          </div>
+          <div class="study-card">
+            <div class="tabs" role="tablist" aria-label="分析面板">
+              <button
+                id="tab-moves"
+                role="tab"
+                aria-selected="true"
+                aria-controls="panel-moves"
+                data-panel="panel-moves"
+              >
+                棋谱
+              </button>
+              <button
+                id="tab-engine"
+                role="tab"
+                aria-selected="false"
+                aria-controls="panel-engine"
+                data-panel="panel-engine"
+                tabindex="-1"
+              >
+                局面分析
+              </button>
+              <button
+                id="tab-report"
+                role="tab"
+                aria-selected="false"
+                aria-controls="panel-accuracy"
+                data-panel="panel-accuracy"
+                tabindex="-1"
+              >
+                对局报告
+              </button>
+            </div>
+            <section
+              class="panel"
+              id="panel-moves"
+              role="tabpanel"
+              aria-labelledby="tab-moves"
+            >
+              <div class="section-heading">
+                <h2>对局记录</h2>
+                <span id="move-count">0 步</span>
+              </div>
+              <div class="move-table-head">
+                <span>#</span><span>白方</span><span>黑方</span>
+              </div>
+              <div id="movelist"></div>
+              <div id="moves-empty" class="empty-state">
+                <span class="empty-icon">♘</span>
+                <h3>好棋，从这里开始</h3>
+                <p>在棋盘上走出第一步，<br />或导入一局棋谱，慢慢复盘。</p>
+                <button id="btn-demo">试试经典对局 <span>↗</span></button>
+              </div>
+            </section>
+            <section
+              class="panel"
+              id="panel-engine"
+              role="tabpanel"
+              aria-labelledby="tab-engine"
+              hidden
+            >
+              <div class="section-heading">
+                <h2>最佳变着</h2>
+                <span>白方视角</span>
+              </div>
+              <p class="panel-description">
+                每次走子后，自动比较当前局面的候选着法。
+              </p>
+              <div id="lines"><div id="evalhint">等待引擎评估…</div></div>
+              <div class="info-note">
+                正值对白方有利，负值对黑方有利。# 表示强制将杀的步数。
+              </div>
+            </section>
+            <section
+              class="panel"
+              id="panel-accuracy"
+              role="tabpanel"
+              aria-labelledby="tab-report"
+              hidden
+            >
+              <div class="section-heading">
+                <h2>对局质量</h2>
+                <span>整局复盘</span>
+              </div>
+              <div id="report-empty" class="empty-state">
+                <span class="empty-icon">▥</span>
+                <h3>看见对局的转折</h3>
+                <p>
+                  走子或导入棋谱后，点击下方<br />「分析整局」，查看准确率和关键失误。
+                </p>
+              </div>
+              <div id="accuracy">
+                <div class="acc-side" id="acc-w">
+                  <div class="who">白方准确率</div>
+                  <div class="val">–</div>
+                  <div class="acc-counts"></div>
+                </div>
+                <div class="acc-side" id="acc-b">
+                  <div class="who">黑方准确率</div>
+                  <div class="val">–</div>
+                  <div class="acc-counts"></div>
+                </div>
+              </div>
+              <div id="graphwrap" hidden>
+                <h3>局势变化</h3>
+                <svg
+                  id="graph"
+                  preserveAspectRatio="none"
+                  aria-label="局势评估曲线"
+                ></svg>
+                <div id="graphtip"></div>
+              </div>
+            </section>
+            <div id="nav" aria-label="棋谱导航">
+              <button
+                id="btn-start"
+                aria-label="回到开局"
+                title="回到开局 (Home)"
+              >
+                ⏮</button
+              ><button id="btn-prev" aria-label="上一步" title="上一步 (←)">
+                ◀</button
+              ><span id="stepinfo">起始局面</span
+              ><button id="btn-next" aria-label="下一步" title="下一步 (→)">
+                ▶</button
+              ><button
+                id="btn-end"
+                aria-label="到最后一步"
+                title="到最后一步 (End)"
+              >
+                ⏭
+              </button>
+            </div>
+            <div class="study-actions">
+              <button id="btn-analyze-game" class="primary">
+                分析整局 <span>↗</span></button
+              ><button id="btn-export-pgn" title="导出带评注 PGN">
+                导出棋谱</button
+              ><button id="btn-cancel-job" hidden>取消分析</button>
+            </div>
+            <div class="job-status" aria-live="polite">
+              <div id="jobprogress"><div></div></div>
+              <div id="jobtext"></div>
+            </div>
+          </div>
+          <p class="desk-footnote">
+            一局棋，一次新的发现。<span>POWERED BY STOCKFISH</span>
+          </p>
+        </aside>
+      </main>
     </div>
-  </div>
-</div>
-<script src="/static/app.js?v=11"></script>
-</body>
+    <div
+      class="modal"
+      id="import-modal"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="import-title"
+      hidden
+    >
+      <div class="modal-card">
+        <div class="modal-heading">
+          <div>
+            <p class="eyebrow">BRING YOUR GAME</p>
+            <h2 id="import-title">导入棋局</h2>
+          </div>
+          <button data-close aria-label="关闭导入窗口">×</button>
+        </div>
+        <p class="panel-description">粘贴棋谱或局面，从任意一步开始研究。</p>
+        <label class="field-label" for="pgn">PGN 棋谱</label
+        ><textarea
+          id="pgn"
+          rows="6"
+          spellcheck="false"
+          placeholder="1. e4 e5 2. Nf3 Nc6 3. Bb5 a6"
+        ></textarea
+        ><button id="btn-import-pgn" class="primary full-width">
+          导入 PGN
+        </button>
+        <details class="fen-details">
+          <summary>从 FEN 局面开始</summary>
+          <label class="field-label" for="fen">FEN 局面</label>
+          <div id="fen-row">
+            <input
+              type="text"
+              id="fen"
+              spellcheck="false"
+              placeholder="粘贴完整 FEN 字符串"
+            /><button id="btn-load-fen">载入</button>
+          </div>
+        </details>
+        <p class="modal-error" id="import-error" role="alert"></p>
+      </div>
+    </div>
+    <div
+      class="modal"
+      id="settings-modal"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="settings-title"
+      hidden
+    >
+      <div class="modal-card">
+        <div class="modal-heading">
+          <div>
+            <p class="eyebrow">MAKE IT YOURS</p>
+            <h2 id="settings-title">偏好与引擎</h2>
+          </div>
+          <button data-close aria-label="关闭设置窗口">×</button>
+        </div>
+        <div class="setting-row">
+          <label for="depth">分析深度<small>越深入，所需时间越长</small></label
+          ><select id="depth">
+            <option value="8">快速 · 8</option>
+            <option value="12" selected>标准 · 12</option>
+            <option value="16">深入 · 16</option>
+            <option value="20">极深 · 20</option>
+          </select>
+        </div>
+        <div class="setting-row">
+          <label for="chk-vs-engine"
+            >人机对弈<small>由引擎自动回应你的着法</small></label
+          ><input type="checkbox" id="chk-vs-engine" />
+        </div>
+        <div class="setting-row">
+          <label for="engine-side">引擎执子</label
+          ><select id="engine-side">
+            <option value="b" selected>黑方 · 我执白</option>
+            <option value="w">白方 · 我执黑</option>
+          </select>
+        </div>
+        <div class="setting-row">
+          <label for="engine-level">对弈棋力</label
+          ><select id="engine-level">
+            <option value="1">入门</option>
+            <option value="2" selected>业余</option>
+            <option value="3">大师</option>
+            <option value="4">特级</option>
+          </select>
+        </div>
+        <div class="setting-row">
+          <label for="chk-badge"
+            >实时评价<small>落子后显示着法质量</small></label
+          ><input type="checkbox" id="chk-badge" checked />
+        </div>
+        <div class="setting-row">
+          <label for="chk-sound">走子音效</label
+          ><input type="checkbox" id="chk-sound" checked />
+        </div>
+        <button class="primary full-width" data-close>完成</button>
+      </div>
+    </div>
+    <script src="/static/app.js?v=12"></script>
+  </body>
 </html>
