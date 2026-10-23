@@ -71,6 +71,10 @@ Python 回归测试覆盖 PGN/FEN、特殊走法、评分与导出；引擎集�
 
 安卓核心可在 JVM 上执行 `android/src/TestCore.java` 的回归检查（使用与构建脚本相同的 jar 依赖）。APK 构建成功不代表已在安卓真机上验证。
 
+`android/src/TestAndroidServer.java` 进一步验证安卓 Java 服务的 HTTP 接口。编译后传入 APK 路径和主机可执行的 Stockfish 路径；测试直接从 APK 读取前端资源，覆盖走棋、多变着、人机应答、带嵌套变着的 PGN、无效 FEN、整局分析与取消。它在主机 JVM 上运行，不能代替手机上的安装、WebView 和 ARM64 引擎启动验证。
+
+`python tools/verify_android_apk.py` 检查 APK 的 ZIP 完整性、前端资源与源码是否一致、引擎的 ARM64 架构，以及 DEX 中已知不兼容 Android 7 的方法引用。APK 签名需另用 `apksigner verify` 验证。
+
 ## 目录结构
 
 ```

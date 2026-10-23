@@ -26,6 +26,19 @@ public class TestCore {
         String pgn = ChessCore.exportPgn(new JSONObject(), black, Arrays.asList("e7e5"), annotations, "Stockfish");
         check(pgn.contains("[%eval +1.25]"), "machine-readable eval annotation");
         check(ChessCore.parsePgn(pgn).getString("initial_fen").equals(black), "custom FEN export round trip");
+        check(ChessCore.parsePgn("1. e4 (1. d4 d5 (1... Nf6)) e5 *")
+                .getJSONArray("moves").length() == 2, "nested variations excluded from mainline");
+        check(ChessCore.parsePgn("1. e4 {ignore (brackets)} e5 ; ignore variation (\n2. Nf3 *")
+                .getJSONArray("moves").length() == 3, "PGN comments do not alter variation depth");
+        check(ChessCore.parsePgn("1. e4 e5 *\n1. d4 d5 *")
+                .getJSONArray("moves").length() == 2, "only the first game is imported");
+        for (String invalid : Arrays.asList("8/8/8/8/8/8/8/8 w - - 0 1",
+                "7k/8/8/8/8/8/8/K6P w - - 0 1", "not a fen")) {
+            boolean rejected = false;
+            try { ChessCore.positionMoves(invalid); }
+            catch (IllegalArgumentException expected) { rejected = true; }
+            check(rejected, "invalid FEN rejected before move generation");
+        }
 
         String mate = "7k/6Q1/6K1/8/8/8/8/8 b - - 0 1";
         check(ChessCore.positionMoves(mate).getBoolean("over"), "terminal position status");
