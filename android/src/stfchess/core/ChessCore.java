@@ -22,6 +22,47 @@ public class ChessCore {
     public static final int MATE_CP = 100_000;
     public static final String START_FEN = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
 
+    /** Validate user FEN before chesslib's move generator accesses king squares. */
+    private static Board loadBoard(String fen) {
+        try {
+            String[] fields = fen.trim().split("\\s+");
+            if (fields.length != 6 || !fields[1].matches("[wb]")
+                    || !fields[2].matches("-|K?Q?k?q?") || fields[2].isEmpty()
+                    || !fields[3].matches("-|[a-h][36]")
+                    || Integer.parseInt(fields[4]) < 0 || Integer.parseInt(fields[5]) < 1) {
+                throw new IllegalArgumentException("格式不完整");
+            }
+            String[] ranks = fields[0].split("/", -1);
+            if (ranks.length != 8) throw new IllegalArgumentException("需要 8 行棋盘");
+            for (String rank : ranks) {
+                int files = 0;
+                for (char piece : rank.toCharArray()) {
+                    if (piece >= '1' && piece <= '8') files += piece - '0';
+                    else if ("prnbqkPRNBQK".indexOf(piece) >= 0) files++;
+                    else throw new IllegalArgumentException("棋子字符无效");
+                }
+                if (files != 8) throw new IllegalArgumentException("每行必须包含 8 格");
+            }
+            Board board = new Board();
+            board.loadFromFen(fen.trim().replaceAll("\\s+", " "));
+            if (Long.bitCount(board.getBitboard(Piece.WHITE_KING)) != 1
+                    || Long.bitCount(board.getBitboard(Piece.BLACK_KING)) != 1) {
+                throw new IllegalArgumentException("双方必须各有一个国王");
+            }
+            if (((board.getBitboard(Piece.WHITE_PAWN) | board.getBitboard(Piece.BLACK_PAWN))
+                    & 0xff000000000000ffL) != 0) {
+                throw new IllegalArgumentException("兵不能位于第一或第八横排");
+            }
+            Side previous = board.getSideToMove() == Side.WHITE ? Side.BLACK : Side.WHITE;
+            if (board.squareAttackedBy(board.getKingSquare(previous), board.getSideToMove()) != 0) {
+                throw new IllegalArgumentException("非行棋方国王不能正被将军");
+            }
+            return board;
+        } catch (RuntimeException error) {
+            throw new IllegalArgumentException("无效 FEN: " + error.getMessage(), error);
+        }
+    }
+
     private static final String[] CLASS_ORDER =
             {"best", "excellent", "good", "inaccuracy", "mistake", "blunder"};
     private static final Map<String, String> CLASS_LABEL = new HashMap<>();
@@ -210,8 +251,7 @@ public class ChessCore {
     /* ---------------- API: /api/position/moves ---------------- */
 
     public static JSONObject positionMoves(String fen) throws Exception {
-        Board board = new Board();
-        board.loadFromFen(fen);
+        Board board = loadBoard(fen);
         JSONArray arr = new JSONArray();
         boolean inCheck = board.isKingAttacked();
         Square kingSq = inCheck ? findKing(board, board.getSideToMove()) : null;
@@ -232,14 +272,17 @@ public class ChessCore {
         out.put("moves", arr);
         out.put("turn", board.getSideToMove() == Side.WHITE ? "w" : "b");
         out.put("check_sq", kingSq == null ? JSONObject.NULL : sq(kingSq));
+        String[] status = gameStatus(board);
+        out.put("over", Boolean.parseBoolean(status[0]));
+        out.put("result", status[1] == null ? JSONObject.NULL : status[1]);
+        out.put("reason", status[2] == null ? JSONObject.NULL : status[2]);
         return out;
     }
 
     /* ---------------- API: 走子（/api/position/move 与 /api/engine/move 共用） ---------------- */
 
     public static JSONObject applyUci(String fen, String uci) throws Exception {
-        Board board = new Board();
-        board.loadFromFen(fen);
+        Board board = loadBoard(fen);
         Move mv = parseUci(uci, board);
         boolean legal = false;
         for (Move m : board.legalMoves()) {
@@ -298,9 +341,9 @@ public class ChessCore {
     }
 
     public static String cpToDisplay(int cpWhite) {
-        if (cpWhite >= MATE_CP - 1000) return "#" + (MATE_CP - cpWhite + 1);
-        if (cpWhite <= -(MATE_CP - 1000)) return "#-" + (MATE_CP + cpWhite + 1);
-        return String.format("%+.2f", cpWhite / 100.0);
+        if (cpWhite >= MATE_CP - 1000) return "#" + (MATE_CP - cpWhite);
+        if (cpWhite <= -(MATE_CP - 1000)) return "#-" + (MATE_CP + cpWhite);
+        return String.format(java.util.Locale.ROOT, "%+.2f", cpWhite / 100.0);
     }
 
     /** 把 pv（UCI 序列）转成 SAN 序列。 */
@@ -329,7 +372,8 @@ public class ChessCore {
 
     public static JSONObject analyze(String fen, int depth, int multipv, double capSeconds,
                                      UciEngine engine) throws Exception {
-        List<UciEngine.Line> lines = engine.analyse(fen, depth, (int) (capSeconds * 1000), multipv);
+        Board board = loadBoard(fen);
+        List<UciEngine.Line> lines = positionLines(board, depth, capSeconds, multipv, engine);
         boolean whiteToMove = fen.split(" ").length > 1 && fen.split(" ")[1].startsWith("w");
         JSONArray arr = new JSONArray();
         for (UciEngine.Line ln : lines) {
@@ -354,6 +398,16 @@ public class ChessCore {
         return out;
     }
 
+    private static List<UciEngine.Line> positionLines(Board board, int depth, double cap,
+                                                     int multipv, UciEngine engine) throws Exception {
+        if (Boolean.parseBoolean(gameStatus(board)[0])) {
+            UciEngine.Line terminal = new UciEngine.Line();
+            terminal.cpPov = board.isMated() ? -MATE_CP : 0;
+            return java.util.Collections.singletonList(terminal);
+        }
+        return engine.analyse(board.getFen(), depth, (int) (cap * 1000), multipv);
+    }
+
     /* ---------------- API: 整局分析 ---------------- */
 
     private static Board boardAfter(String initialFen, List<Move> moves, int count) throws Exception {
@@ -372,8 +426,7 @@ public class ChessCore {
     public static JSONObject analyzeGame(String initialFen, List<String> uciMoves, int depth,
                                          double cap, UciEngine engine, JobCtl ctl) throws Exception {
         // 校验着法
-        Board check = new Board();
-        check.loadFromFen(initialFen);
+        Board check = loadBoard(initialFen);
         List<Move> moves = new ArrayList<>();
         for (int i = 0; i < uciMoves.size(); i++) {
             String u = uciMoves.get(i);
@@ -394,7 +447,7 @@ public class ChessCore {
                 return c;
             }
             Board b = boardAfter(initialFen, moves, p);
-            List<UciEngine.Line> lines = engine.analyse(b.getFen(), depth, (int) (cap * 1000), 1);
+            List<UciEngine.Line> lines = positionLines(b, depth, cap, 1, engine);
             pos.add(lines.isEmpty() ? new UciEngine.Line() : lines.get(0));
             ctl.progress(p + 1, n + 1);
         }
@@ -442,7 +495,7 @@ public class ChessCore {
             o.put("accuracy", Math.round(acc * 10.0) / 10.0);
             o.put("eval_white_after", afterCpWhite);
             o.put("best_san", bestSan == null ? JSONObject.NULL : bestSan);
-            o.put("best_score", cpToDisplay(white ? bestCpWhite : -bestCpWhite));
+            o.put("best_score", cpToDisplay(bestCpWhite));
             o.put("played_score", cpToDisplay(afterCpWhite));
             JSONArray pvSan = new JSONArray();
             List<String> pvs = best.pvUci == null ? new ArrayList<>()
@@ -476,7 +529,32 @@ public class ChessCore {
 
     /* ---------------- PGN 解析与导出 ---------------- */
 
-    /** 解析 PGN：表头用正则提取，着法逐个与生成 SAN 匹配。 */
+    /** Remove comments and recursive annotation variations, retaining only the mainline. */
+    private static String mainlineText(String text) {
+        StringBuilder out = new StringBuilder();
+        int variation = 0;
+        boolean comment = false, lineComment = false;
+        for (int i = 0; i < text.length(); i++) {
+            char ch = text.charAt(i);
+            if (lineComment) {
+                if (ch == '\n' || ch == '\r') { lineComment = false; out.append(' '); }
+                continue;
+            }
+            if (comment) { if (ch == '}') { comment = false; out.append(' '); } continue; }
+            if (ch == '{') { comment = true; out.append(' '); continue; }
+            if (ch == ';') { lineComment = true; out.append(' '); continue; }
+            if (ch == '(') { variation++; out.append(' '); continue; }
+            if (ch == ')') {
+                if (variation == 0) throw new IllegalArgumentException("PGN 变着括号不匹配");
+                variation--; out.append(' '); continue;
+            }
+            if (variation == 0) out.append(ch);
+        }
+        if (variation != 0 || comment) throw new IllegalArgumentException("PGN 注释或变着未闭合");
+        return out.toString();
+    }
+
+    /** 解析 PGN：表头用正则提取，主线着法逐个与生成 SAN 匹配。 */
     public static JSONObject parsePgn(String pgn) throws Exception {
         JSONObject headers = new JSONObject();
         java.util.regex.Matcher hm =
@@ -484,22 +562,20 @@ public class ChessCore {
                         .matcher(pgn);
         while (hm.find()) headers.put(hm.group(1), hm.group(2));
         String movetext = pgn.replaceAll("(?m)^\\[.*\\]\\s*$", " ");
-        movetext = movetext.replaceAll("\\{[^}]*}", " ")
-                .replaceAll(";[^\\n]*", " ")
+        movetext = mainlineText(movetext)
                 .replaceAll("\\$\\d+", " ")
-                .replaceAll("\\d+\\s*\\.{1,3}", " ")
-                .replaceAll("(1-0|0-1|1/2-1/2|\\*)", " ");
+                .replaceAll("\\d+\\s*\\.{1,3}", " ");
         String initialFen = START_FEN;
         if (headers.has("FEN") && !headers.optString("FEN", "").isEmpty()) {
             initialFen = headers.getString("FEN");
         }
-        Board board = new Board();
-        board.loadFromFen(initialFen);
+        Board board = loadBoard(initialFen);
         JSONArray moves = new JSONArray();
         for (String tok : movetext.split("\\s+")) {
             String san = tok.trim();
             if (san.isEmpty() || san.equals(".")) continue;
-            String norm = san.replaceAll("[+#!?]", "");
+            if (san.matches("1-0|0-1|1/2-1/2|\\*")) break;
+            String norm = san.replaceAll("[+#!?]", "").replace('0', 'O');
             Move found = null;
             String foundSan = null;
             for (Move m : board.legalMoves()) {
@@ -534,17 +610,19 @@ public class ChessCore {
                                    JSONArray analysis, String engineName) throws Exception {
         StringBuilder sb = new StringBuilder();
         java.util.Set<String> skip = new java.util.HashSet<>();
-        skip.add("FEN"); skip.add("SetUp");
+        skip.add("FEN"); skip.add("SetUp"); skip.add("Annotator");
         if (headers != null && headers.length() > 0) {
             for (String k : headers.keySet()) {
                 if (!skip.contains(k)) sb.append("[").append(k).append(" \"")
-                        .append(headers.getString(k)).append("\"]").append("\n");
+                        .append(escapeHeader(headers.getString(k))).append("\"]").append("\n");
             }
         }
-        sb.append("[Annotator \"").append(engineName).append(" 棋局分析\"]\n\n");
+        if (!START_FEN.equals(initialFen)) {
+            sb.append("[SetUp \"1\"]\n[FEN \"").append(escapeHeader(initialFen)).append("\"]\n");
+        }
+        sb.append("[Annotator \"").append(escapeHeader(engineName)).append(" 棋局分析\"]\n\n");
 
-        Board board = new Board();
-        board.loadFromFen(initialFen);
+        Board board = loadBoard(initialFen);
         boolean white = board.getSideToMove() == Side.WHITE;
         int moveNo = Integer.parseInt(initialFen.split(" ")[5]);
         for (int i = 0; i < uciMoves.size(); i++) {
@@ -564,7 +642,7 @@ public class ChessCore {
                 Integer nag = CLASS_NAG.get(cls);
                 if (nag != null && nag != 0) sb.append(" $").append(nag);
                 StringBuilder cm = new StringBuilder();
-                cm.append("%eval ").append(cpToDisplay(an.optInt("eval_white_after", 0)));
+                cm.append("[%eval ").append(cpToDisplay(an.optInt("eval_white_after", 0))).append("]");
                 String bestSan = an.optString("best_san", null);
                 if (bestSan != null && !bestSan.isEmpty() && !bestSan.equals(an.optString("san", ""))) {
                     cm.append(" 最佳: ").append(bestSan).append(" (")
@@ -572,8 +650,8 @@ public class ChessCore {
                 }
                 int loss = an.optInt("cp_loss", 0);
                 cm.append(loss > 90000 ? " 送杀" : " 损失 " + loss + "厘兵");
-                sb.append(" {[").append(CLASS_LABEL.getOrDefault(cls, "")).append(" ")
-                        .append(cm).append("]}");
+                sb.append(" {").append(cm).append(" ").append(CLASS_LABEL.getOrDefault(cls, ""))
+                        .append("}");
             }
             sb.append(" ");
             board.doMove(mv);
@@ -583,5 +661,9 @@ public class ChessCore {
         if (headers != null && headers.has("Result")) sb.append(headers.getString("Result"));
         sb.append("\n");
         return sb.toString();
+    }
+
+    private static String escapeHeader(String value) {
+        return value.replace("\\", "\\\\").replace("\"", "\\\"").replace("\n", " ").replace("\r", " ");
     }
 }

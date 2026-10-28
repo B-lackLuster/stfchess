@@ -24,6 +24,7 @@ _POPEN_KWARGS = {"creationflags": subprocess.CREATE_NO_WINDOW} if os.name == "nt
 _lock = threading.RLock()
 _engine = None
 _engine_name = "未加载"
+ENGINE_THREADS = max(1, min(8, (os.cpu_count() or 4) // 2))
 
 
 class EngineError(RuntimeError):
@@ -36,10 +37,11 @@ def _spawn() -> None:
     for path in _ENGINE_CANDIDATES:
         if not os.path.exists(path):
             continue
+        eng = None
         try:
             eng = chess.engine.SimpleEngine.popen_uci(path, **_POPEN_KWARGS)
             eng.configure({
-                "Threads": max(1, (os.cpu_count() or 4) - 1),
+                "Threads": ENGINE_THREADS,
                 "Hash": 256,
             })
             _engine = eng
@@ -47,7 +49,13 @@ def _spawn() -> None:
             return
         except Exception as e:  # 尝试下一个候选二进制
             last_err = e
-    raise EngineError(f"无法启动 Stockfish: {last_err}")
+            if eng is not None:
+                try:
+                    eng.quit()
+                except Exception:
+                    pass
+    detail = str(last_err) if last_err else "未找到引擎文件，请运行 python tools/get_engines.py"
+    raise EngineError(f"无法启动 Stockfish: {detail}")
 
 
 def engine_lock() -> threading.RLock:

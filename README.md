@@ -2,6 +2,16 @@
 
 基于 **Stockfish 18** 引擎 + FastAPI 后端 + 纯原生前端（无外部 CDN 依赖）的本地棋局分析工具。
 
+## 界面
+
+首页以棋盘为中心，右侧通过「棋谱 / 局面分析 / 对局报告」切换信息。导入 PGN、FEN 和偏好设置在独立弹窗中打开，手机端改为上下排列。
+
+导入只加载棋局；需要逐步评分与准确率时，点击「分析整局」，可随时取消。切换局面或开始新对局后，旧的走棋、评估和分析请求不会覆盖新棋局。
+
+![桌面界面](docs/screenshots/desktop.jpg)
+
+[查看手机界面](docs/screenshots/mobile.jpg)
+
 ## 功能
 
 - **交互棋盘**：点击走子或**鼠标左键直接拖拽**（只能落在合法位置，非法落点自动弹回；含升变、王车易位、
@@ -29,7 +39,7 @@
 - **安卓版（APK）**：安装 `android\stfchess-android.apk`（arm64，Android 7+）——Java 原生壳 +
   内置 HTTP 服务 + 官方 Stockfish，**完全离线、装上即用**，前端与桌面版同一套
 - 重新构建：桌面 `build_exe.bat`；安卓 `tools\build_apk.py`（需本目录 tools/ 下的 JDK 与
-  Android build-tools，首次构建脚本会自动准备）
+  Android build-tools，需事先准备工具链，见下文）
 
 ### 从源码跑起来（克隆后）
 
@@ -38,12 +48,32 @@ git clone https://github.com/B-lackLuster/stfchess.git
 cd stfchess
 python tools/get_engines.py            :: 下载 Stockfish 18 引擎（~154MB，官方 release）
 python -m venv .venv
-.venv\Scripts\python -m pip install python-chess fastapi "uvicorn[standard]"
+.venv\Scripts\python -m pip install -r requirements.txt
 start.bat
 ```
 
 安卓 APK 请用 `tools\build_apk.py` 自行构建（依赖 JDK 17 与 Android build-tools 34，
-详见下文目录说明；构建脚本会自动下载缺失的工具链）。
+详见脚本开头的依赖清单；缺少依赖时脚本会列出具体路径）。
+
+### 构建与验证
+
+Windows 桌面构建先安装 `requirements-desktop.txt`，再运行 `build_exe.bat`。
+
+安卓工具链默认位于项目的 `tools/` 和 `downloads/android/`。如果另一份工作目录已有工具链，可设置 `STFCHESS_TOOLCHAIN_ROOT` 为那个项目根目录，输出仍写入当前项目。签名保存在 `android/debug.keystore`，也可通过 `STFCHESS_KEYSTORE` 指定已有签名；请保留该文件以便覆盖安装。APK、签名及构建中间文件不提交到 Git。
+
+```bat
+.venv\Scripts\python -m pip install -r requirements-dev.txt
+.venv\Scripts\python -m unittest discover -s tests -v
+node --test tests/frontend.test.cjs
+```
+
+Python 回归测试覆盖 PGN/FEN、特殊走法、评分与导出；引擎集成测试在本地有引擎时运行，否则明确跳过。Node 测试覆盖切换棋局、取消任务后丢弃旧请求，以及单条变着不覆盖三条变着缓存。
+
+安卓核心可在 JVM 上执行 `android/src/TestCore.java` 的回归检查（使用与构建脚本相同的 jar 依赖）。APK 构建成功不代表已在安卓真机上验证。
+
+`android/src/TestAndroidServer.java` 进一步验证安卓 Java 服务的 HTTP 接口。编译后传入 APK 路径和主机可执行的 Stockfish 路径；测试直接从 APK 读取前端资源，覆盖走棋、多变着、人机应答、带嵌套变着的 PGN、无效 FEN、整局分析与取消。它在主机 JVM 上运行，不能代替手机上的安装、WebView 和 ARM64 引擎启动验证。
+
+`python tools/verify_android_apk.py` 检查 APK 的 ZIP 完整性、前端资源与源码是否一致、引擎的 ARM64 架构，以及 DEX 中已知不兼容 Android 7 的方法引用。APK 签名需另用 `apksigner verify` 验证。
 
 ## 目录结构
 

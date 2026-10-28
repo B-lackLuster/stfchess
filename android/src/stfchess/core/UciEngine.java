@@ -58,7 +58,10 @@ public class UciEngine {
 
     public boolean isAlive() {
         Process p = process;
-        return p != null && p.isAlive();
+        if (p == null) return false;
+        // Process.isAlive() was only added on Android 8 (API 26).
+        try { p.exitValue(); return false; }
+        catch (IllegalThreadStateException running) { return true; }
     }
 
     public void quit() {
@@ -93,6 +96,8 @@ public class UciEngine {
     public List<Line> analyse(String fen, int depth, int movetimeMs, int multipv) throws Exception {
         synchronized (lock) {
             requireAlive();
+            // 对弈降低的棋力不能影响后续分析。
+            send("setoption name Skill Level value 20");
             if (multipv != curMultiPv) {
                 send("setoption name MultiPV value " + multipv);
                 curMultiPv = multipv;
@@ -178,7 +183,7 @@ public class UciEngine {
     }
 
     private void requireAlive() throws IllegalStateException {
-        if (process == null || !process.isAlive()) {
+        if (!isAlive()) {
             throw new IllegalStateException("引擎进程未运行");
         }
     }

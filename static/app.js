@@ -39,6 +39,10 @@ const S = {
   jobGen: 0,
   moveGen: 0,           // 每走一步 +1，用于丢弃过期的实时评价
   busy: false,
+  positionGen: 0,       // 切换局面后丢弃旧请求，包含切回相同 FEN 的情况
+  actionGen: 0,
+  importGen: 0,
+  analysisResult: null,
   vsEngine: false,
   engineSide: "b",
   headers: {},
@@ -162,9 +166,85 @@ function winp(cp) {
   return 50 + 50 * (2 / (1 + Math.exp(-0.00368208 * cp)) - 1);
 }
 function fmtEval(cpWhite) {
-  if (cpWhite > 90000) return "#" + Math.max(1, 100000 - cpWhite + 1);
-  if (cpWhite < -90000) return "#-" + Math.max(1, 100000 + cpWhite + 1);
+  if (cpWhite >= 99000) return "#" + (100000 - cpWhite);
+  if (cpWhite <= -99000) return "#-" + (100000 + cpWhite);
   return (cpWhite / 100).toFixed(2);
+}
+
+/* ---------------- 工作区与弹窗 ---------------- */
+let modalReturnFocus = null;
+function openModal(id) {
+  cancelDrag();
+  S.sel = null;
+  $("#promo").hidden = true;
+  renderBoard();
+  modalReturnFocus = document.activeElement;
+  document.querySelectorAll(".modal").forEach((el) => { el.hidden = el.id !== id; });
+  $("#import-error").textContent = "";
+  document.body.classList.add("modal-open");
+  $("#app").setAttribute("aria-hidden", "true");
+  const modal = document.getElementById(id);
+  (modal.querySelector("textarea, select") || modal.querySelector("button")).focus();
+}
+function closeModal() {
+  document.querySelectorAll(".modal").forEach((el) => { el.hidden = true; });
+  document.body.classList.remove("modal-open");
+  $("#app").removeAttribute("aria-hidden");
+  if (modalReturnFocus) modalReturnFocus.focus();
+  modalReturnFocus = null;
+}
+function selectPanel(id) {
+  document.querySelectorAll("[data-panel]").forEach((tab) => {
+    const active = tab.dataset.panel === id;
+    tab.setAttribute("aria-selected", String(active));
+    tab.tabIndex = active ? 0 : -1;
+    document.getElementById(tab.dataset.panel).hidden = !active;
+  });
+  renderGraph();
+}
+function renderWorkspace() {
+  [["mode-analysis", !S.vsEngine], ["mode-play", S.vsEngine]].forEach(([id, active]) => {
+    document.getElementById(id).classList.toggle("active", active);
+    document.getElementById(id).setAttribute("aria-pressed", String(active));
+  });
+  $("#mode-caption").textContent = S.vsEngine ? "与引擎对弈，边下边学" : "探索局面，找到更好的着法";
+  const top = S.flipped ? "w" : "b";
+  [["top", top], ["bottom", top === "w" ? "b" : "w"]].forEach(([place, color]) => {
+    const name = S.headers[color === "w" ? "White" : "Black"];
+    document.getElementById(place + "-player").textContent = name && name !== "?" ? name : color === "w" ? "白方" : "黑方";
+    document.getElementById(place + "-detail").textContent = S.vsEngine ? (color === S.engineSide ? "Stockfish · " + $("#engine-level").selectedOptions[0].text : "你 · " + (color === "w" ? "执白" : "执黑")) : "自由分析";
+    document.getElementById(place + "-avatar").classList.toggle("white", color === "w");
+  });
+  $("#top-side").textContent = top === "w" ? "WHITE" : "BLACK";
+  $("#move-count").textContent = S.history.length + " 步";
+  $("#moves-empty").hidden = S.history.length > 0;
+  $("#report-empty").hidden = !!S.analysisResult;
+  $("#graphwrap").hidden = !S.analysisResult;
+  $("#accuracy").style.display = S.analysisResult ? "flex" : "none";
+  $("#btn-start").disabled = $("#btn-prev").disabled = S.cursor === 0;
+  $("#btn-next").disabled = $("#btn-end").disabled = S.cursor === S.history.length;
+  $("#btn-undo").disabled = S.cursor === 0 || S.busy;
+  $("#btn-export-pgn").disabled = S.history.length === 0;
+  $("#btn-analyze-game").disabled = S.history.length === 0 || !!S.job;
+  $("#btn-cancel-job").hidden = !S.job;
+  $("#btn-hint").disabled = $("#btn-engine-move").disabled = S.busy || S.gameOver;
+}
+function beginAction() {
+  const token = ++S.actionGen;
+  S.busy = true;
+  renderWorkspace();
+  return token;
+}
+function endAction(token) {
+  if (token !== S.actionGen) return;
+  S.busy = false;
+  renderWorkspace();
+}
+function clearReport() {
+  S.analysisResult = null;
+  S.evalStart = null;
+  S.history.forEach((m) => { m.an = null; });
+  invalidateJob();
 }
 
 /* ---------------- 棋盘渲染 ---------------- */
@@ -317,14 +397,12 @@ function renderCoords() {
     const fileLabel = FILES[S.flipped ? 7 - i : i];
     const fl = document.createElement("span");
     fl.className = "coord-file";
-    const xf = S.flipped ? 7 - i : i;
-    const yf = S.flipped ? 7 - i : i;
     fl.textContent = fileLabel;
     fl.style.left = `calc(${i} * 12.5% + 4px)`;
     fl.style.right = "auto";
     fl.style.bottom = "3px";
     // 文件坐标在底行；判断该格底色决定文字颜色
-    const light = (xf + yf) % 2 === 0;
+    const light = (i + 7) % 2 === 0;
     fl.classList.toggle("on-light", light);
     wrap.appendChild(fl);
 
@@ -333,7 +411,7 @@ function renderCoords() {
     rl.className = "coord-rank";
     rl.textContent = rankLabel;
     rl.style.top = `calc(${i} * 12.5% + 3px)`;
-    const lightR = (xf + yf) % 2 === 0;
+    const lightR = i % 2 === 0;
     rl.classList.toggle("on-light", lightR);
     wrap.appendChild(rl);
   }
@@ -342,15 +420,20 @@ function renderCoords() {
 /* ---------------- 走子 ---------------- */
 async function refreshLegal() {
   const fen = curFen();
+  const gen = S.positionGen;
   try {
     const r = await api("/api/position/moves", { fen });
-    if (fen !== curFen()) return; // 已切换
+    if (gen !== S.positionGen) return;
     S.legal = r.moves;
     S.turn = r.turn;
     S.checkSq = r.check_sq;
+    S.gameOver = r.over ?? !r.moves.length;
     renderBoard();
     renderStatus();
+    renderWorkspace();
+    return true;
   } catch (e) {
+    if (gen !== S.positionGen) return;
     S.legal = [];
     setStatus(`载入合法着法失败: ${e.message}`, true);
   }
@@ -363,6 +446,7 @@ function showPromo(from, to) {
   ["q", "r", "b", "n"].forEach((t) => {
     const b = document.createElement("button");
     b.textContent = GLYPH[t];
+    b.setAttribute("aria-label", {q:"升变为后",r:"升变为车",b:"升变为象",n:"升变为马"}[t]);
     if (color === "w") b.style.color = "#fafafa";
     b.onclick = () => { promo.hidden = true; doUserMove(from, to, t); };
     promo.appendChild(b);
@@ -380,17 +464,20 @@ async function doUserMove(from, to, promotion) {
   if (S.busy) return;
   S.sel = null;
   clearHint();
-  S.busy = true;
+  const token = beginAction();
+  const gen = S.positionGen;
   const preFen = curFen();
   const depth = +$("#depth").value;
   try {
     const r = await api("/api/position/move", { fen: preFen, from, to, promotion: promotion || undefined });
+    if (gen !== S.positionGen) return;
     if (S.badgeOn) S._pendingEval = { preFen, uci: r.uci, depth };
     applyMove(r);
   } catch (e) {
-    setStatus(`走子失败: ${e.message}`, true);
+    if (gen === S.positionGen) setStatus(`走子失败: ${e.message}`, true);
+  } finally {
+    endAction(token);
   }
-  S.busy = false;
   maybeEngineMove();
 }
 
@@ -403,6 +490,7 @@ function applyMove(r) {
   const pe = S._pendingEval;
   S._pendingEval = null;
   S.moveGen++;
+  clearReport();
   S.history.push({
     san: r.san, uci: r.uci, fenAfter: r.fen_after,
     capture: r.capture, check: r.check, color: r.color, an: null,
@@ -417,17 +505,32 @@ function applyMove(r) {
 }
 
 function invalidateJob() {
-  if (S.job) { api(`/api/jobs/${S.job.id}/cancel`, {}).catch(() => {}); }
+  if (S.job?.id) { api(`/api/jobs/${S.job.id}/cancel`, {}).catch(() => {}); }
   S.job = null;
   S.jobGen++;
   $("#jobprogress").style.display = "none";
   $("#jobtext").textContent = "";
+  $("#btn-cancel-job").hidden = true;
+  $("#btn-analyze-game").disabled = !S.history.length;
 }
 
-function afterPositionChange() {
+async function afterPositionChange() {
+  S.positionGen++;
+  S.actionGen++;
+  S.busy = false;
+  S.moveGen++;
+  S.sel = null;
+  S.legal = [];
+  S.checkSq = null;
+  S.lines = null;
+  if (S.analyzeAbort) S.analyzeAbort.abort();
+  clearTimeout(analyzeTimer);
+  cancelDrag();
+  $("#promo").hidden = true;
+  const badge = $("#movebadge");
+  if (badge) badge.remove();
   renderAll();
-  refreshLegal();
-  scheduleAnalyze();
+  if (await refreshLegal()) scheduleAnalyze();
 }
 
 /* ---------------- 导航 ---------------- */
@@ -451,14 +554,14 @@ function scheduleAnalyze() {
 
 async function runPositionAnalyze() {
   const fen = curFen();
+  const gen = S.positionGen;
   const depth = +$("#depth").value;
   const key = fen + "|" + depth;
   if (S.evalCache.has(key)) {
     renderLines(S.evalCache.get(key));
     return;
   }
-  if (!S.legal.length) {
-    $("#lines").innerHTML = `<div id="evalhint">对局已结束</div>`;
+  if (!S.legal.length && !S.gameOver) {
     return;
   }
   if (S.analyzeAbort) S.analyzeAbort.abort();
@@ -473,12 +576,13 @@ async function runPositionAnalyze() {
     });
     if (!r.ok) throw new Error((await r.json()).detail || r.statusText);
     const data = await r.json();
-    if (data.fen !== curFen()) return;
+    if (gen !== S.positionGen || depth !== +$("#depth").value) return;
     if (S.evalCache.size > 400) S.evalCache.delete(S.evalCache.keys().next().value);
     S.evalCache.set(key, data.lines);
     renderLines(data.lines);
   } catch (e) {
-    if (e.name === "AbortError") return;
+    if (e.name === "AbortError" || gen !== S.positionGen) return;
+    renderLines(null);
     const eh = document.getElementById("evalhint");
     if (eh) eh.textContent = "评估失败: " + e.message;
   }
@@ -567,13 +671,8 @@ function scheduleMoveBadge(preFen, uci, depth) {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ fen: postFen, depth, multipv: 1, cap: 2.5 }),
-  }).then((r) => r.json()).then((data) => {
-    if (gen !== S.moveGen || curFen() !== postFen) return;
-    const key = postFen + "|" + depth;
-    if (!S.evalCache.has(key)) {
-      if (S.evalCache.size > 400) S.evalCache.delete(S.evalCache.keys().next().value);
-      S.evalCache.set(key, data.lines || []);
-    }
+  }).then((r) => { if (!r.ok) throw new Error(r.statusText); return r.json(); }).then((data) => {
+    if (!S.badgeOn || gen !== S.moveGen || curFen() !== postFen) return;
     const to = uci.slice(2, 4);
     if (!S.legal.length) {
       // 终局：将杀或逼和
@@ -609,33 +708,37 @@ function clearHint() { $("#hintsvg").innerHTML = ""; }
 
 async function hint() {
   if (S.gameOver) return;
+  const gen = S.positionGen;
   try {
     const r = await api("/api/position/analyze", { fen: curFen(), depth: 14, multipv: 1, cap: 2.5 });
-    if (!r.lines.length) return;
+    if (gen !== S.positionGen || !r.lines.length || !r.lines[0].pv_uci.length) return;
     drawHint(r.lines[0].pv_uci[0]);
     setStatus(`提示: ${r.lines[0].pv_san[0]}（评估 ${fmtEval(r.lines[0].cp_white)}）`);
   } catch (e) {
-    setStatus("提示失败: " + e.message, true);
+    if (gen === S.positionGen) setStatus("提示失败: " + e.message, true);
   }
 }
 
 /* ---------------- 人机对弈 ---------------- */
-async function maybeEngineMove() {
-  if (!S.vsEngine || S.busy || S.gameOver) return;
-  if (fenTurn(curFen()) !== S.engineSide) return;
-  S.busy = true;
+async function maybeEngineMove(force = false) {
+  if (S.busy || S.gameOver) return;
+  if (!force && (!S.vsEngine || fenTurn(curFen()) !== S.engineSide)) return;
+  const gen = S.positionGen;
+  const token = beginAction();
   setStatus("引擎思考中…");
   try {
     const preFen = curFen();
     const depth = +$("#depth").value;
     const r = await api("/api/engine/move", { fen: preFen, level: +$("#engine-level").value });
+    if (gen !== S.positionGen) return;
     if (S.badgeOn) S._pendingEval = { preFen, uci: r.uci, depth };
     applyMove(r);
     setStatus(`引擎走了 ${r.san}`);
   } catch (e) {
-    setStatus("引擎走子失败: " + e.message, true);
+    if (gen === S.positionGen) setStatus("引擎走子失败: " + e.message, true);
+  } finally {
+    endAction(token);
   }
-  S.busy = false;
 }
 
 /* ---------------- 棋盘方向 ---------------- */
@@ -643,54 +746,63 @@ function applyOrientation() {
   // 默认白方在下；人机对弈且引擎执白（人类执黑）时黑方在下
   S.flipped = S.vsEngine && S.engineSide === "w";
   renderBoard();
+  clearHint();
+  renderWorkspace();
 }
 
 /* ---------------- PGN / FEN ---------------- */
 async function importPGN() {
   const text = $("#pgn").value.trim();
-  if (!text) { setStatus("请先粘贴 PGN 内容", true); return; }
+  if (!text) { $("#import-error").textContent = "请先粘贴 PGN 内容"; return; }
+  const request = ++S.importGen;
+  const gen = S.positionGen;
   try {
     const r = await api("/api/games/parse", { pgn: text });
+    if (request !== S.importGen || gen !== S.positionGen) return;
     S.initialFen = r.initial_fen;
     S.headers = r.headers || {};
     S.history = r.moves.map((m) => ({ ...m, fenAfter: m.fen_after, an: null }));
     S.cursor = S.history.length;
     S.gameOver = r.over;
-    S.evalStart = null;
-    invalidateJob();
+    clearReport();
     clearHint();
     setStatus(`已导入 ${r.moves.length} 步${r.result && r.result !== "*" ? "，结果 " + r.result : ""}`);
     S._pendingEval = null;
     applyOrientation();
-    renderAll();
-    refreshLegal();
-    scheduleAnalyze();
-    startGameAnalysis();
+    closeModal();
+    selectPanel("panel-moves");
+    await afterPositionChange();
   } catch (e) {
+    if (request !== S.importGen || gen !== S.positionGen) return;
+    $("#import-error").textContent = e.message;
     setStatus("PGN 导入失败: " + e.message, true);
   }
 }
 
 async function loadFEN() {
   const fen = $("#fen").value.trim();
-  if (!fen) { setStatus("请输入 FEN", true); return; }
+  if (!fen) { $("#import-error").textContent = "请输入 FEN"; return; }
+  const request = ++S.importGen;
+  const gen = S.positionGen;
   try {
     await api("/api/position/moves", { fen }); // 顺便校验 FEN 合法性
+    if (request !== S.importGen || gen !== S.positionGen) return;
     S.initialFen = fen;
     S.history = [];
     S.cursor = 0;
     S.gameOver = false;
     S.headers = {};
-    S.evalStart = null;
-    invalidateJob();
+    clearReport();
     clearHint();
     setStatus("已载入 FEN 局面");
     S._pendingEval = null;
     applyOrientation();
-    renderAll();
-    await refreshLegal();
-    scheduleAnalyze();
+    closeModal();
+    selectPanel("panel-moves");
+    await afterPositionChange();
   } catch (e) {
+    if (request !== S.importGen || gen !== S.positionGen) return;
+    $("#import-error").textContent = e.message;
     setStatus("FEN 无效: " + e.message, true);
   }
 }
@@ -722,6 +834,11 @@ async function startGameAnalysis() {
   invalidateJob();
   const gen = ++S.jobGen;
   const depth = +$("#depth").value;
+  selectPanel("panel-accuracy");
+  $("#jobtext").textContent = "正在启动分析…";
+  $("#btn-analyze-game").disabled = true;
+  $("#btn-cancel-job").hidden = false;
+  S.job = { id: null, gen, depth };
   try {
     const r = await api("/api/games/analyze-job", {
       initial_fen: S.initialFen,
@@ -729,11 +846,16 @@ async function startGameAnalysis() {
       depth,
       cap: 2.0,
     });
-    S.job = { id: r.job_id, gen };
+    if (gen !== S.jobGen) { api(`/api/jobs/${r.job_id}/cancel`, {}).catch(() => {}); return; }
+    S.job = { id: r.job_id, gen, depth };
+    renderWorkspace();
     $("#jobprogress").style.display = "block";
+    $("#jobprogress > div").style.width = "0%";
     $("#jobtext").textContent = "分析中…";
     pollJob(r.job_id, gen);
   } catch (e) {
+    if (gen !== S.jobGen) return;
+    invalidateJob();
     setStatus("启动分析失败: " + e.message, true);
   }
 }
@@ -743,10 +865,14 @@ async function pollJob(id, gen) {
     await new Promise((res) => setTimeout(res, 600));
     if (S.jobGen !== gen) return;
     let r;
-    try { r = await api(`/api/jobs/${id}`); } catch (e) { return; }
+    try { r = await api(`/api/jobs/${id}`); } catch (e) {
+      if (gen === S.jobGen) { invalidateJob(); $("#jobtext").textContent = "无法获取分析进度: " + e.message; renderWorkspace(); }
+      return;
+    }
+    if (gen !== S.jobGen) return;
     $("#jobprogress > div").style.width =
       r.total ? Math.round(100 * r.done / r.total) + "%" : "0%";
-    $("#jobtext").textContent = `分析中 ${r.done}/${r.total} 局面（深度 ${$("#depth").value}）…`;
+    $("#jobtext").textContent = `分析中 ${r.done}/${r.total} 局面（深度 ${S.job.depth}）…`;
     if (r.status === "running") continue;
     if (r.status === "done" && r.result) {
       mergeAnalysis(r.result);
@@ -759,16 +885,19 @@ async function pollJob(id, gen) {
     }
     $("#jobprogress").style.display = "none";
     S.job = null;
+    renderWorkspace();
     return;
   }
 }
 
 function mergeAnalysis(res) {
+  S.analysisResult = res;
   S.evalStart = res.eval_start;
   res.moves.forEach((m) => {
     if (S.history[m.ply]) S.history[m.ply].an = m;
   });
   renderAccuracy(res);
+  renderWorkspace();
   renderMoves();
   renderGraph();
 }
@@ -793,15 +922,18 @@ function renderAccuracy(res) {
 function renderMoves() {
   const ml = $("#movelist");
   ml.innerHTML = "";
-  for (let i = 0; i < S.history.length; i += 2) {
+  const offset = fenTurn(S.initialFen) === "b" ? 1 : 0;
+  for (let slot = 0; slot < S.history.length + offset; slot += 2) {
+    const i = slot - offset;
     const num = document.createElement("span");
     num.className = "mnum";
-    num.textContent = moveNumberAt(i) + ".";
+    num.textContent = moveNumberAt(Math.max(0, i)) + ".";
     ml.appendChild(num);
     for (let j = i; j < i + 2; j++) {
-      if (j >= S.history.length) { ml.appendChild(document.createElement("span")); continue; }
+      if (j < 0 || j >= S.history.length) { ml.appendChild(document.createElement("span")); continue; }
       const m = S.history[j];
-      const cell = document.createElement("span");
+      const cell = document.createElement("button");
+      cell.type = "button";
       cell.className = "mv" + (S.cursor === j + 1 ? " cur" : "");
       cell.dataset.ply = j;
       const san = document.createElement("span");
@@ -821,12 +953,16 @@ function renderMoves() {
     }
   }
   const cur = ml.querySelector(".mv.cur");
-  if (cur) cur.scrollIntoView({ block: "nearest" });
+  if (cur) {
+    if (cur.offsetTop < ml.scrollTop) ml.scrollTop = cur.offsetTop;
+    else if (cur.offsetTop + cur.offsetHeight > ml.scrollTop + ml.clientHeight) ml.scrollTop = cur.offsetTop + cur.offsetHeight - ml.clientHeight;
+  }
 }
 
 /* ---------------- 评估曲线 ---------------- */
 function renderGraph() {
   const svg = $("#graph");
+  svg.onclick = svg.onmousemove = svg.onmouseleave = null;
   svg.innerHTML = "";
   const hasData = S.history.some((m) => m.an);
   const w = svg.clientWidth || 600;
@@ -938,6 +1074,7 @@ function setStatus(text, isErr = false) {
 }
 
 function renderStatus() {
+  $("#status").style.color = "";
   const fen = curFen();
   const turn = fenTurn(fen);
   if (S.gameOver && S.cursor === S.history.length) {
@@ -962,12 +1099,39 @@ function renderAll() {
   renderStatus();
   renderStepInfo();
   renderGraph();
+  renderWorkspace();
   const cached = S.evalCache.get(curFen() + "|" + $("#depth").value);
   if (cached) renderLines(cached);
+  else {
+    renderLines(null);
+    $("#evalhint").textContent = "正在评估当前局面…";
+    $("#evaltext").textContent = "—";
+    $("#evalfill").style.width = "50%";
+  }
 }
 
 /* ---------------- 事件绑定 ---------------- */
 function bindEvents() {
+  document.querySelectorAll("[data-open]").forEach((button) => { button.onclick = () => openModal(button.dataset.open); });
+  document.querySelectorAll("[data-close]").forEach((button) => { button.onclick = closeModal; });
+  document.querySelectorAll(".modal").forEach((modal) => { modal.onclick = (ev) => { if (ev.target === modal) closeModal(); }; });
+  document.querySelectorAll("[data-panel]").forEach((tab) => {
+    tab.onclick = () => selectPanel(tab.dataset.panel);
+    tab.onkeydown = (ev) => {
+      if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(ev.key)) return;
+      ev.preventDefault();
+      ev.stopPropagation();
+      const tabs = Array.from(document.querySelectorAll("[data-panel]"));
+      const i = tabs.indexOf(tab);
+      const target = tabs[ev.key === "Home" ? 0 : ev.key === "End" ? tabs.length - 1 : (i + (ev.key === "ArrowRight" ? 1 : -1) + tabs.length) % tabs.length];
+      selectPanel(target.dataset.panel);
+      target.focus();
+    };
+  });
+  $("#mode-analysis").onclick = () => changeMode(false);
+  $("#mode-play").onclick = () => changeMode(true);
+  $("#btn-cancel-job").onclick = () => { invalidateJob(); $("#jobtext").textContent = "分析已取消"; renderWorkspace(); };
+  $("#engine-level").onchange = renderWorkspace;
   const boardEl = $("#board");
   boardEl.addEventListener("pointerdown", onBoardPointerDown);
   window.addEventListener("pointermove", onBoardPointerMove);
@@ -982,7 +1146,8 @@ function bindEvents() {
   $("#btn-end").onclick = () => setCursor(S.history.length);
 
   $("#btn-new").onclick = async () => {
-    invalidateJob();
+    S.importGen++;
+    clearReport();
     S.initialFen = START_FEN;
     S.history = [];
     S.cursor = 0;
@@ -995,54 +1160,32 @@ function bindEvents() {
     $("#accuracy").style.display = "none";
     setStatus("新对局开始");
     applyOrientation();
-    renderAll();
-    await refreshLegal();
-    scheduleAnalyze();
+    await afterPositionChange();
     maybeEngineMove();
   };
 
   $("#btn-undo").onclick = () => {
-    if (!S.history.length || S.busy) return;
+    if (!S.cursor || S.busy) return;
     // 引擎刚走完（最后一步是引擎的）→ 连引擎的应着一起撤销，回到自己轮次
-    const lastMove = S.history[S.history.length - 1];
-    const trim = (S.vsEngine && S.history.length >= 2 && lastMove.color === S.engineSide) ? 2 : 1;
-    S.history = S.history.slice(0, S.history.length - trim);
+    const lastMove = S.history[S.cursor - 1];
+    const trim = (S.vsEngine && S.cursor >= 2 && lastMove.color === S.engineSide) ? 2 : 1;
+    S.history = S.history.slice(0, S.cursor - trim);
     S.cursor = S.history.length;
     S.gameOver = false;
     S.sel = null;
     S._pendingEval = null;
-    invalidateJob();
+    clearReport();
     clearHint();
-    renderAll();
-    refreshLegal();
-    scheduleAnalyze();
-    maybeEngineMove();
+    afterPositionChange().then(() => maybeEngineMove());
   };
 
-  $("#btn-flip").onclick = () => { S.flipped = !S.flipped; renderBoard(); };
+  $("#btn-flip").onclick = () => { cancelDrag(); $("#promo").hidden = true; S.flipped = !S.flipped; clearHint(); renderBoard(); renderWorkspace(); };
 
   $("#btn-hint").onclick = hint;
-  $("#btn-engine-move").onclick = async () => {
-    if (S.busy || S.gameOver) return;
-    S.busy = true;
-    setStatus("引擎思考中…");
-    try {
-      const preFen = curFen();
-      const depth = +$("#depth").value;
-      const r = await api("/api/engine/move", { fen: preFen, level: +$("#engine-level").value });
-      if (S.badgeOn) S._pendingEval = { preFen, uci: r.uci, depth };
-      applyMove(r);
-      setStatus(`引擎走了 ${r.san}`);
-    } catch (e) {
-      setStatus("引擎走子失败: " + e.message, true);
-    }
-    S.busy = false;
-  };
+  $("#btn-engine-move").onclick = () => maybeEngineMove(true);
 
   $("#chk-vs-engine").onchange = (e) => {
-    S.vsEngine = e.target.checked;
-    applyOrientation();
-    if (S.vsEngine) maybeEngineMove();
+    changeMode(e.target.checked);
   };
   $("#chk-badge").checked = S.badgeOn;
   $("#chk-badge").onchange = (e) => {
@@ -1057,11 +1200,13 @@ function bindEvents() {
   };
   $("#engine-side").onchange = (e) => {
     S.engineSide = e.target.value;
+    afterPositionChange();
     applyOrientation();
     maybeEngineMove();
   };
 
   $("#depth").onchange = () => {
+    if (S.analyzeAbort) S.analyzeAbort.abort();
     scheduleAnalyze();
     renderGraph();
   };
@@ -1073,7 +1218,20 @@ function bindEvents() {
   $("#btn-analyze-game").onclick = startGameAnalysis;
 
   document.addEventListener("keydown", (ev) => {
-    if (ev.target.tagName === "TEXTAREA" || ev.target.tagName === "INPUT") return;
+    const modal = document.querySelector(".modal:not([hidden])");
+    if (modal) {
+      if (ev.key === "Escape") { ev.preventDefault(); closeModal(); }
+      if (ev.key === "Tab") {
+        const focusable = Array.from(modal.querySelectorAll("button,textarea,input,select,summary")).filter((el) => !el.disabled && el.getClientRects().length);
+        const first = focusable[0], last = focusable[focusable.length - 1];
+        if (ev.shiftKey && document.activeElement === first) { ev.preventDefault(); last.focus(); }
+        else if (!ev.shiftKey && document.activeElement === last) { ev.preventDefault(); first.focus(); }
+      }
+      return;
+    }
+    if (ev.key === "Escape") { $("#promo").hidden = true; cancelDrag(); S.sel = null; renderBoard(); }
+    if (["TEXTAREA", "INPUT", "SELECT"].includes(ev.target.tagName) || ev.target.isContentEditable) return;
+    if (["ArrowLeft", "ArrowRight", "Home", "End"].includes(ev.key)) ev.preventDefault();
     if (ev.key === "ArrowLeft") setCursor(S.cursor - 1);
     if (ev.key === "ArrowRight") setCursor(S.cursor + 1);
     if (ev.key === "Home") setCursor(0);
@@ -1081,6 +1239,14 @@ function bindEvents() {
   });
 
   window.addEventListener("resize", () => renderGraph());
+}
+
+function changeMode(enabled) {
+  S.vsEngine = enabled;
+  $("#chk-vs-engine").checked = enabled;
+  afterPositionChange();
+  applyOrientation();
+  if (enabled) maybeEngineMove();
 }
 
 /* ---------------- 棋盘拖拽 / 点击走子（鼠标与触屏统一 Pointer Events） ---------------- */
@@ -1196,8 +1362,10 @@ async function init() {
     $("#conn").className = "ok";
     scheduleAnalyze();
   } catch (e) {
-    $("#conn").textContent = "引擎连接失败: " + e.message;
+    $("#conn").textContent = "引擎未连接";
+    $("#conn").title = e.message;
     $("#conn").className = "bad";
+    $("#evalhint").textContent = "引擎暂不可用。请检查服务及引擎文件，然后刷新页面。";
   }
 }
 

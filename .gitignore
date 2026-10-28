@@ -13,6 +13,8 @@ dist/
 android/out/
 android/apk_build/
 android/*.apk
+android/*.idsig
+android/*.keystore
 build/
 
 # 引擎二进制（tools/get_engines.py 自动下载；Stockfish 为 GPL，体积大不入库）
