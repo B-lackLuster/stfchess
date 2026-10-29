@@ -97,9 +97,8 @@ def main():
         if os.path.exists(src):
             shutil.copy(src, os.path.join(www, "static", f))
 
-    # 2. 图标
-    shutil.copy(os.path.join(ROOT, "static", "icon.png"),
-                os.path.join(OUT, "res", "drawable", "icon.png"))
+    # 2. 安卓资源（启动图标：Android 8+ 自适应图标 + 旧系统 PNG）
+    shutil.copytree(os.path.join(ROOT, "android", "res"), os.path.join(OUT, "res"), dirs_exist_ok=True)
 
     # 3. 引擎二进制 → lib/arm64-v8a/libstockfish.so
     shutil.copy(STOCKFISH, os.path.join(OUT, "lib", "arm64-v8a", "libstockfish.so"))
