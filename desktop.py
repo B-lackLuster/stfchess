@@ -50,6 +50,8 @@ def run_desktop() -> None:
         sys.exit("服务器启动失败")
 
     import webview
+    # pywebview 默认拦截网页下载，「导出棋谱」需要放行（WebView2 会弹出保存对话框）
+    webview.settings["ALLOW_DOWNLOADS"] = True
     webview.create_window(
         "stfchess 棋局分析",
         f"http://127.0.0.1:{port}/",

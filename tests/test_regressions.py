@@ -65,6 +65,14 @@ class AnalysisRegressions(unittest.TestCase):
         self.assertEqual(game.end().eval().white().score(), 125)
         self.assertIn("错误", game.end().comment)
 
+    def test_export_distinguishes_missed_mate_from_allowing_mate(self):
+        missed = {"cls": "blunder", "cp_loss": 99_400, "eval_white_after": 600, "color": "w"}
+        allowed = {"cls": "blunder", "cp_loss": 100_050, "eval_white_after": 99_998, "color": "b"}
+        text = analysis.export_pgn({}, chess.STARTING_FEN, ["e2e4", "e7e5"], [missed, allowed])
+        first, second = chess.pgn.read_game(io.StringIO(text)).mainline()
+        self.assertIn("错失杀棋", first.comment)
+        self.assertIn("送杀", second.comment)
+
     def test_best_and_played_scores_use_same_white_perspective(self):
         class Engine:
             def analyse(self, board, *args, **kwargs):

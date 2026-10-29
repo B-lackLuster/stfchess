@@ -32,6 +32,10 @@ const S = {
   turn: "w",
   checkSq: null,
   gameOver: false,
+  result: null,         // 终局结果 1-0 / 0-1 / 1/2-1/2
+  reason: null,         // 终局原因，如「黑方被将杀」
+  repetition: false,    // 当前局面是否已三次重复
+  thinking: false,      // 引擎正在走子
   evalCache: new Map(), // fen+depth -> lines
   lines: null,          // 当前评估线
   evalStart: null,      // 整局分析得到的初始评估
@@ -170,6 +174,35 @@ function fmtEval(cpWhite) {
   if (cpWhite <= -99000) return "#-" + (100000 + cpWhite);
   return (cpWhite / 100).toFixed(2);
 }
+// 终局局面的评估线（无变着、深度 0）→ 比分；否则返回 null
+function terminalScore(ln) {
+  if (!ln || ln.depth || (ln.pv_uci && ln.pv_uci.length)) return null;
+  if (ln.cp_white >= 100000) return "1-0";
+  if (ln.cp_white <= -100000) return "0-1";
+  return "½-½";
+}
+function resultLabel(result) {
+  return { "1-0": "白方胜", "0-1": "黑方胜", "1/2-1/2": "和棋" }[result] || "对局结束";
+}
+// 三次重复只能靠完整走子历史判断（接口只收 FEN），按 FEN 前四段比较局面
+function positionKey(fen) { return fen.split(" ").slice(0, 4).join(" "); }
+function isThreefold() {
+  const key = positionKey(curFen());
+  let n = positionKey(S.initialFen) === key ? 1 : 0;
+  for (let i = 0; i < S.cursor; i++) if (positionKey(S.history[i].fenAfter) === key) n++;
+  return n >= 3;
+}
+
+/* ---------------- 提示消息（短暂显示，不覆盖行棋状态） ---------------- */
+let _toastTimer = null;
+function notify(text, isErr = false) {
+  const el = $("#toast");
+  el.textContent = text;
+  el.classList.toggle("error", isErr);
+  el.hidden = false;
+  clearTimeout(_toastTimer);
+  _toastTimer = setTimeout(() => { el.hidden = true; }, isErr ? 6000 : 2800);
+}
 
 /* ---------------- 工作区与弹窗 ---------------- */
 let modalReturnFocus = null;
@@ -223,7 +256,10 @@ function renderWorkspace() {
   $("#accuracy").style.display = S.analysisResult ? "flex" : "none";
   $("#btn-start").disabled = $("#btn-prev").disabled = S.cursor === 0;
   $("#btn-next").disabled = $("#btn-end").disabled = S.cursor === S.history.length;
-  $("#btn-undo").disabled = S.cursor === 0 || S.busy;
+  // 悔棋只撤销最后的着法；浏览中途局面时禁用，避免误删后面的整段棋谱
+  const atEnd = S.cursor === S.history.length;
+  $("#btn-undo").disabled = S.cursor === 0 || S.busy || !atEnd;
+  $("#btn-undo").title = atEnd ? "撤销最后的着法" : "回到最后一步后才能悔棋";
   $("#btn-export-pgn").disabled = S.history.length === 0;
   $("#btn-analyze-game").disabled = S.history.length === 0 || !!S.job;
   $("#btn-cancel-job").hidden = !S.job;
@@ -427,7 +463,16 @@ async function refreshLegal() {
     S.legal = r.moves;
     S.turn = r.turn;
     S.checkSq = r.check_sq;
-    S.gameOver = r.over ?? !r.moves.length;
+    const over = r.over ?? !r.moves.length;
+    S.repetition = !over && isThreefold();
+    // 人机对弈中三次重复直接判和；自由分析只提示，仍可继续探索
+    const repDraw = S.repetition && S.vsEngine;
+    S.gameOver = over || repDraw;
+    S.result = over ? r.result : repDraw ? "1/2-1/2" : null;
+    S.reason = over ? r.reason : repDraw ? "三次重复局面" : null;
+    if (S.gameOver && S.result && S.history.length && S.cursor === S.history.length) {
+      S.headers = { ...S.headers, Result: S.result };
+    }
     renderBoard();
     renderStatus();
     renderWorkspace();
@@ -435,7 +480,7 @@ async function refreshLegal() {
   } catch (e) {
     if (gen !== S.positionGen) return;
     S.legal = [];
-    setStatus(`载入合法着法失败: ${e.message}`, true);
+    notify(`载入合法着法失败: ${e.message}`, true);
   }
 }
 
@@ -474,7 +519,7 @@ async function doUserMove(from, to, promotion) {
     if (S.badgeOn) S._pendingEval = { preFen, uci: r.uci, depth };
     applyMove(r);
   } catch (e) {
-    if (gen === S.positionGen) setStatus(`走子失败: ${e.message}`, true);
+    if (gen === S.positionGen) notify(`走子失败: ${e.message}`, true);
   } finally {
     endAction(token);
   }
@@ -496,7 +541,10 @@ function applyMove(r) {
     capture: r.capture, check: r.check, color: r.color, an: null,
   });
   S.cursor = S.history.length;
-  if (r.over) {
+  // 棋谱已改变，导入时的对局结果不再成立
+  S.headers = { ...S.headers, Result: r.over ? r.result : "*" };
+  // 人机对弈：先同步判断三次重复，避免引擎在已判和的局面继续走子
+  if (r.over || (S.vsEngine && isThreefold())) {
     S.gameOver = true;
   }
   playMoveSound(r);
@@ -518,6 +566,7 @@ async function afterPositionChange() {
   S.positionGen++;
   S.actionGen++;
   S.busy = false;
+  S.thinking = false;
   S.moveGen++;
   S.sel = null;
   S.legal = [];
@@ -526,6 +575,7 @@ async function afterPositionChange() {
   if (S.analyzeAbort) S.analyzeAbort.abort();
   clearTimeout(analyzeTimer);
   cancelDrag();
+  clearHint(); // 提示箭头只属于旧局面
   $("#promo").hidden = true;
   const badge = $("#movebadge");
   if (badge) badge.remove();
@@ -598,18 +648,19 @@ function renderLines(lines) {
   }
   const fen = curFen();
   lines.forEach((ln) => {
+    const end = terminalScore(ln);
     const div = document.createElement("div");
     div.className = "line";
     const sc = document.createElement("span");
     sc.className = "score " + (ln.cp_white >= 0 ? "pos" : "neg");
-    sc.textContent = fmtEval(ln.cp_white);
+    sc.textContent = end || fmtEval(ln.cp_white);
     const pv = document.createElement("span");
     pv.className = "pv";
-    pv.textContent = pvText(ln.pv_san, fen);
+    pv.textContent = end ? (S.reason || "对局已结束") : pvText(ln.pv_san, fen);
     pv.title = pv.textContent;
     const meta = document.createElement("span");
     meta.className = "meta";
-    meta.textContent = "深度" + ln.depth;
+    meta.textContent = end ? "" : "深度" + ln.depth;
     div.append(sc, pv, meta);
     wrap.appendChild(div);
   });
@@ -617,7 +668,7 @@ function renderLines(lines) {
   const cp = lines[0].cp_white;
   const wp = winp(cp);
   $("#evalfill").style.width = wp.toFixed(1) + "%";
-  $("#evaltext").textContent = fmtEval(cp);
+  $("#evaltext").textContent = terminalScore(lines[0]) || fmtEval(cp);
 }
 
 function pvText(pvSan, fen) {
@@ -674,16 +725,14 @@ function scheduleMoveBadge(preFen, uci, depth) {
   }).then((r) => { if (!r.ok) throw new Error(r.statusText); return r.json(); }).then((data) => {
     if (!S.badgeOn || gen !== S.moveGen || curFen() !== postFen) return;
     const to = uci.slice(2, 4);
-    if (!S.legal.length) {
-      // 终局：将杀或逼和
-      if (S.checkSq) showMoveBadge(to, "best", "将杀!");
-      else showMoveBadge(to, "mistake", "逼和");
-      return;
-    }
+    const after = data.lines && data.lines[0];
+    if (!after) return;
+    // 用评估结果判断将杀：S.legal 此时可能还没刷新，不能拿来判断终局
+    if (after.cp_pov <= -100000) { showMoveBadge(to, "best", "将杀!"); return; }
     const prev = S.evalCache.get(preFen + "|" + depth);
-    if (!prev || !prev.length || !data.lines || !data.lines.length) return;
+    if (!prev || !prev.length) return;
     const bestUci = prev[0].pv_uci ? prev[0].pv_uci[0] : null;
-    const playedCp = -data.lines[0].cp_pov; // 对手视角取反 → 行棋方实际所得
+    const playedCp = -after.cp_pov; // 对手视角取反 → 行棋方实际所得
     const loss = Math.max(0, prev[0].cp_pov - playedCp);
     showMoveBadge(to, portClassify(loss, bestUci === uci));
   }).catch(() => {});
@@ -713,9 +762,9 @@ async function hint() {
     const r = await api("/api/position/analyze", { fen: curFen(), depth: 14, multipv: 1, cap: 2.5 });
     if (gen !== S.positionGen || !r.lines.length || !r.lines[0].pv_uci.length) return;
     drawHint(r.lines[0].pv_uci[0]);
-    setStatus(`提示: ${r.lines[0].pv_san[0]}（评估 ${fmtEval(r.lines[0].cp_white)}）`);
+    notify(`提示: ${r.lines[0].pv_san[0]}（评估 ${fmtEval(r.lines[0].cp_white)}）`);
   } catch (e) {
-    if (gen === S.positionGen) setStatus("提示失败: " + e.message, true);
+    if (gen === S.positionGen) notify("提示失败: " + e.message, true);
   }
 }
 
@@ -725,7 +774,9 @@ async function maybeEngineMove(force = false) {
   if (!force && (!S.vsEngine || fenTurn(curFen()) !== S.engineSide)) return;
   const gen = S.positionGen;
   const token = beginAction();
-  setStatus("引擎思考中…");
+  S.thinking = true;
+  renderStatus();
+  let moved = false;
   try {
     const preFen = curFen();
     const depth = +$("#depth").value;
@@ -733,12 +784,16 @@ async function maybeEngineMove(force = false) {
     if (gen !== S.positionGen) return;
     if (S.badgeOn) S._pendingEval = { preFen, uci: r.uci, depth };
     applyMove(r);
-    setStatus(`引擎走了 ${r.san}`);
+    moved = true;
   } catch (e) {
-    if (gen === S.positionGen) setStatus("引擎走子失败: " + e.message, true);
+    if (gen === S.positionGen) notify("引擎走子失败: " + e.message, true);
   } finally {
+    if (gen === S.positionGen || moved) S.thinking = false;
     endAction(token);
+    renderStatus();
   }
+  // 人机对弈中让引擎替自己走了一步后，轮到引擎一方时由它继续应着
+  if (moved) await maybeEngineMove();
 }
 
 /* ---------------- 棋盘方向 ---------------- */
@@ -766,7 +821,7 @@ async function importPGN() {
     S.gameOver = r.over;
     clearReport();
     clearHint();
-    setStatus(`已导入 ${r.moves.length} 步${r.result && r.result !== "*" ? "，结果 " + r.result : ""}`);
+    notify(`已导入 ${r.moves.length} 步${r.result && r.result !== "*" ? "，结果 " + r.result : ""}`);
     S._pendingEval = null;
     applyOrientation();
     closeModal();
@@ -775,12 +830,12 @@ async function importPGN() {
   } catch (e) {
     if (request !== S.importGen || gen !== S.positionGen) return;
     $("#import-error").textContent = e.message;
-    setStatus("PGN 导入失败: " + e.message, true);
+    notify("PGN 导入失败: " + e.message, true);
   }
 }
 
 async function loadFEN() {
-  const fen = $("#fen").value.trim();
+  const fen = $("#fen").value.trim().split(/\s+/).join(" ");
   if (!fen) { $("#import-error").textContent = "请输入 FEN"; return; }
   const request = ++S.importGen;
   const gen = S.positionGen;
@@ -794,7 +849,7 @@ async function loadFEN() {
     S.headers = {};
     clearReport();
     clearHint();
-    setStatus("已载入 FEN 局面");
+    notify("已载入 FEN 局面");
     S._pendingEval = null;
     applyOrientation();
     closeModal();
@@ -803,12 +858,21 @@ async function loadFEN() {
   } catch (e) {
     if (request !== S.importGen || gen !== S.positionGen) return;
     $("#import-error").textContent = e.message;
-    setStatus("FEN 无效: " + e.message, true);
+    notify("FEN 无效: " + e.message, true);
   }
 }
 
+// 安卓 WebView 不处理网页下载，导出时只提供复制
+const IS_ANDROID_WEBVIEW = typeof navigator !== "undefined" && /; wv\)/.test(navigator.userAgent);
+
+function pgnFileName() {
+  const clean = (name, fallback) =>
+    (name && name !== "?" ? name : fallback).replace(/[\\/:*?"<>|\s]+/g, " ").trim().slice(0, 40) || fallback;
+  return `${clean(S.headers.White, "白方")}-vs-${clean(S.headers.Black, "黑方")}.pgn`;
+}
+
 async function exportPGN() {
-  if (!S.history.length) { setStatus("没有可导出的着法", true); return; }
+  if (!S.history.length) { notify("没有可导出的着法", true); return; }
   try {
     const r = await api("/api/games/export", {
       headers: S.headers,
@@ -816,21 +880,46 @@ async function exportPGN() {
       moves: S.history.map((m) => m.uci),
       analysis: S.history.map((m) => m.an || {}),
     });
-    const blob = new Blob([r.pgn], { type: "application/x-chess-pgn" });
-    const a = document.createElement("a");
-    a.href = URL.createObjectURL(blob);
-    a.download = (S.headers.White || "analysis") + "-vs-" + (S.headers.Black || "opponent") + ".pgn";
-    a.click();
-    URL.revokeObjectURL(a.href);
-    setStatus("已导出带评注的 PGN");
+    $("#export-text").value = r.pgn;
+    $("#btn-download-pgn").hidden = IS_ANDROID_WEBVIEW;
+    $("#export-note").textContent = S.analysisResult
+      ? "已包含整局分析的评注与评估。"
+      : "尚未分析整局，导出的棋谱不含评注。";
+    openModal("export-modal");
+    $("#export-text").setSelectionRange(0, 0); // 赋值后光标在末尾，滚回开头方便查看
+    $("#export-text").scrollTop = 0;
   } catch (e) {
-    setStatus("导出失败: " + e.message, true);
+    notify("导出失败: " + e.message, true);
   }
+}
+
+async function copyText(text) {
+  try {
+    await navigator.clipboard.writeText(text);
+    return true;
+  } catch (e) { /* 部分 WebView 不支持异步剪贴板，退回 execCommand */ }
+  const ta = $("#export-text");
+  ta.focus();
+  ta.select();
+  try { return document.execCommand("copy"); } catch (e) { return false; }
+}
+
+function downloadPGN() {
+  const blob = new Blob([$("#export-text").value], { type: "application/x-chess-pgn" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = pgnFileName();
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 30000); // 立即释放会让部分内核取消下载
+  notify("已开始下载 " + a.download);
 }
 
 /* ---------------- 整局分析任务 ---------------- */
 async function startGameAnalysis() {
-  if (!S.history.length) { setStatus("没有着法可分析，请先走子或导入棋局", true); return; }
+  if (!S.history.length) { notify("没有着法可分析，请先走子或导入棋局", true); return; }
   invalidateJob();
   const gen = ++S.jobGen;
   const depth = +$("#depth").value;
@@ -856,7 +945,7 @@ async function startGameAnalysis() {
   } catch (e) {
     if (gen !== S.jobGen) return;
     invalidateJob();
-    setStatus("启动分析失败: " + e.message, true);
+    notify("启动分析失败: " + e.message, true);
   }
 }
 
@@ -945,7 +1034,11 @@ function renderMoves() {
         b.className = "bdg " + m.an.cls;
         b.textContent = CLS_LABEL[m.an.cls];
         cell.appendChild(b);
-        const lossTxt = m.an.cp_loss > 90000 ? "送杀" : m.an.cp_loss + " 厘兵";
+        // 损失巨大有两种：走完被对手强制杀（送杀），或错过了自己的强制杀
+        const moverAfter = m.an.color === "w" ? m.an.eval_white_after : -m.an.eval_white_after;
+        const lossTxt = m.an.cp_loss > 90000
+          ? (moverAfter <= -99000 ? "送杀" : "错失杀棋")
+          : m.an.cp_loss + " 厘兵";
         cell.title = `引擎推荐: ${m.an.best_san} (${m.an.best_score})\n实际: ${m.an.san} → ${m.an.played_score}\n损失: ${lossTxt} | 单步准确率 ${m.an.accuracy}%`;
       }
       cell.onclick = () => setCursor(j + 1);
@@ -1067,24 +1160,23 @@ function renderGraph() {
 }
 
 /* ---------------- 状态与其他渲染 ---------------- */
-function setStatus(text, isErr = false) {
-  const el = $("#status");
-  el.textContent = text;
-  el.style.color = isErr ? "#ff7b72" : "";
-}
-
 function renderStatus() {
-  $("#status").style.color = "";
+  const el = $("#status");
   const fen = curFen();
   const turn = fenTurn(fen);
   if (S.gameOver && S.cursor === S.history.length) {
-    setStatus("对局结束");
+    el.textContent = S.reason ? `${resultLabel(S.result)} · ${S.reason}` : "对局结束";
+    return;
+  }
+  if (S.thinking) {
+    el.textContent = "引擎思考中…";
     return;
   }
   const side = turn === "w" ? "白方" : "黑方";
   const check = S.checkSq ? " · 将军！" : "";
-  $("#status").innerHTML =
-    `第 ${fenFullmove(fen)} 回合 · <span class="turn">${side}行棋</span>${check}`;
+  const rep = S.repetition ? " · 三次重复（可判和）" : "";
+  el.innerHTML =
+    `第 ${fenFullmove(fen)} 回合 · <span class="turn">${side}行棋</span>${check}${rep}`;
 }
 
 function renderStepInfo() {
@@ -1139,6 +1231,15 @@ function bindEvents() {
   window.addEventListener("pointercancel", () => { cancelDrag(); });
   // 首次交互时解锁音频（浏览器策略要求用户手势）
   window.addEventListener("pointerdown", () => audioCtx(), { once: true, capture: true });
+  // 升变面板外点击 = 取消升变（触屏没有 Esc 键）；这次点击不再触发选子
+  document.addEventListener("pointerdown", (ev) => {
+    const promo = $("#promo");
+    if (promo.hidden || promo.contains(ev.target)) return;
+    ev.stopPropagation();
+    promo.hidden = true;
+    S.sel = null;
+    renderBoard();
+  }, true);
 
   $("#btn-start").onclick = () => setCursor(0);
   $("#btn-prev").onclick = () => setCursor(S.cursor - 1);
@@ -1158,20 +1259,22 @@ function bindEvents() {
     S._pendingEval = null;
     clearHint();
     $("#accuracy").style.display = "none";
-    setStatus("新对局开始");
+    notify("新对局开始");
     applyOrientation();
     await afterPositionChange();
     maybeEngineMove();
   };
 
   $("#btn-undo").onclick = () => {
-    if (!S.cursor || S.busy) return;
+    // 只在棋谱末尾悔棋；浏览中途局面时截断会丢掉后面的着法
+    if (!S.cursor || S.busy || S.cursor !== S.history.length) return;
     // 引擎刚走完（最后一步是引擎的）→ 连引擎的应着一起撤销，回到自己轮次
     const lastMove = S.history[S.cursor - 1];
     const trim = (S.vsEngine && S.cursor >= 2 && lastMove.color === S.engineSide) ? 2 : 1;
     S.history = S.history.slice(0, S.cursor - trim);
     S.cursor = S.history.length;
     S.gameOver = false;
+    S.headers = { ...S.headers, Result: "*" };
     S.sel = null;
     S._pendingEval = null;
     clearReport();
@@ -1179,7 +1282,15 @@ function bindEvents() {
     afterPositionChange().then(() => maybeEngineMove());
   };
 
-  $("#btn-flip").onclick = () => { cancelDrag(); $("#promo").hidden = true; S.flipped = !S.flipped; clearHint(); renderBoard(); renderWorkspace(); };
+  $("#btn-flip").onclick = () => {
+    cancelDrag();
+    $("#promo").hidden = true;
+    $("#movebadge")?.remove(); // 徽章按旧方向定位，翻转后会错位
+    S.flipped = !S.flipped;
+    clearHint();
+    renderBoard();
+    renderWorkspace();
+  };
 
   $("#btn-hint").onclick = hint;
   $("#btn-engine-move").onclick = () => maybeEngineMove(true);
@@ -1213,6 +1324,11 @@ function bindEvents() {
 
   $("#btn-import-pgn").onclick = importPGN;
   $("#btn-export-pgn").onclick = exportPGN;
+  $("#btn-copy-pgn").onclick = async () => {
+    const ok = await copyText($("#export-text").value);
+    notify(ok ? "已复制到剪贴板" : "复制失败，请长按文本手动复制", !ok);
+  };
+  $("#btn-download-pgn").onclick = downloadPGN;
   $("#btn-load-fen").onclick = loadFEN;
   $("#btn-demo").onclick = () => { $("#pgn").value = DEMO_PGN; importPGN(); };
   $("#btn-analyze-game").onclick = startGameAnalysis;
@@ -1280,7 +1396,9 @@ function onBoardPointerDown(ev) {
     }
   }
   const p = pieceAt(curFen(), sq);
-  if (p && p.color === S.turn && !S.gameOver && !S.busy) {
+  // 人机对弈时不能替引擎一方走子
+  const myTurn = !S.vsEngine || S.turn !== S.engineSide;
+  if (p && p.color === S.turn && myTurn && !S.gameOver && !S.busy) {
     S.sel = sq;
     renderBoard();
     _drag = {

@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="theme-color" content="#f5f4ef" />
     <title>stfchess · 棋局研究室</title>
-    <link rel="stylesheet" href="/static/style.css?v=4" />
+    <link rel="stylesheet" href="/static/style.css?v=5" />
     <link rel="icon" href="/static/icon.png" />
   </head>
   <body>
@@ -332,6 +332,37 @@
         <button class="primary full-width" data-close>完成</button>
       </div>
     </div>
-    <script src="/static/app.js?v=12"></script>
+    <div
+      class="modal"
+      id="export-modal"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="export-title"
+      hidden
+    >
+      <div class="modal-card">
+        <div class="modal-heading">
+          <div>
+            <p class="eyebrow">TAKE IT WITH YOU</p>
+            <h2 id="export-title">导出棋谱</h2>
+          </div>
+          <button data-close aria-label="关闭导出窗口">×</button>
+        </div>
+        <p class="panel-description" id="export-note"></p>
+        <textarea
+          id="export-text"
+          rows="8"
+          readonly
+          spellcheck="false"
+          aria-label="带评注的 PGN"
+        ></textarea>
+        <div class="modal-actions">
+          <button id="btn-copy-pgn" class="primary">复制 PGN</button
+          ><button id="btn-download-pgn">下载 .pgn 文件</button>
+        </div>
+      </div>
+    </div>
+    <div id="toast" role="status" aria-live="polite" hidden></div>
+    <script src="/static/app.js?v=13"></script>
   </body>
 </html>

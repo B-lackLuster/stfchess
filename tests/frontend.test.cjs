@@ -92,6 +92,43 @@ test('cancelled polling cannot merge an old report into a new game',async()=>{
   assert.equal(ctx.merged.length,0);
 });
 
+test('undo is ignored while browsing the middle of the game',()=>{
+  const {run,node} = app();
+  run(`S.history=[{uci:'e2e4',color:'w'},{uci:'e7e5',color:'b'},{uci:'g1f3',color:'w'}]; S.cursor=1; bindEvents()`);
+  node('#btn-undo').onclick();
+  assert.equal(run('S.history.length'),3);
+});
+
+test('a forced engine move in play mode lets the engine answer for its own side',async()=>{
+  const {ctx,run} = app();
+  ctx.replies=[
+    {san:'e4',uci:'e2e4',fen_after:'rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1',color:'w'},
+    {san:'e5',uci:'e7e5',fen_after:'rnbqkbnr/pppp1ppp/8/4p3/4P3/8/PPPP1PPP/RNBQKBNR w KQkq - 0 2',color:'b'}];
+  run(`S.vsEngine=true; S.engineSide='b'; api = async () => replies.shift()`);
+  await run('maybeEngineMove(true)');
+  assert.equal(run('S.history.map(m=>m.san).join()'),'e4,e5');
+});
+
+test('threefold repetition is detected from the move history',()=>{
+  const {run} = app();
+  const start='rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1';
+  const cycle=['rnbqkbnr/pppppppp/8/8/8/5N2/PPPPPPPP/RNBQKB1R b KQkq - 1 1','rnbqkb1r/pppppppp/5n2/8/8/5N2/PPPPPPPP/RNBQKB1R w KQkq - 2 2',
+    'rnbqkb1r/pppppppp/5n2/8/8/8/PPPPPPPP/RNBQKBNR b KQkq - 3 2','rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 4 3'];
+  run(`S.initialFen=${JSON.stringify(start)}; S.history=${JSON.stringify([...cycle,...cycle].map(f=>({fenAfter:f})))}`);
+  run('S.cursor=4'); assert.equal(run('isThreefold()'),false);
+  run('S.cursor=8'); assert.equal(run('isThreefold()'),true);
+});
+
+test('move badge does not report stalemate before legal moves have loaded',async()=>{
+  const {ctx,run} = app();
+  ctx.badges=[];
+  ctx.fetch=async()=>({ok:true,json:async()=>({lines:[{cp_pov:-30,depth:12,pv_uci:['e7e5']}]})});
+  run(`S.badgeOn=true; S.legal=[]; showMoveBadge=(sq,cls,text)=>badges.push(sq+' '+cls+(text?' '+text:''));
+    S.evalCache.set('prev|12',[{cp_pov:40,pv_uci:['e2e4']}]); scheduleMoveBadge('prev','e2e4',12)`);
+  await new Promise(setImmediate); await new Promise(setImmediate);
+  assert.deepEqual(ctx.badges,['e4 best']);
+});
+
 test('arrow shortcuts still work after focusing a navigation button',()=>{
   const {ctx,run,handlers} = app();
   ctx.cursors=[];
