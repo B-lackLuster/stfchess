@@ -61,6 +61,12 @@ Windows 桌面构建先安装 `requirements-desktop.txt`，再运行 `build_exe.
 
 安卓工具链默认位于项目的 `tools/` 和 `downloads/android/`。如果另一份工作目录已有工具链，可设置 `STFCHESS_TOOLCHAIN_ROOT` 为那个项目根目录，输出仍写入当前项目。签名保存在 `android/debug.keystore`，也可通过 `STFCHESS_KEYSTORE` 指定已有签名；请保留该文件以便覆盖安装。APK、签名及构建中间文件不提交到 Git。
 
+在 macOS / Linux 上，找不到上面的 JDK 和 build-tools 时会改用 `JAVA_HOME` 与 `ANDROID_HOME`（需安装 `build-tools;34.0.0` 和 `platforms;android-34`）。Stockfish 安卓引擎和 jar 包仍按 `tools/android/stockfish/`、`downloads/android/` 的结构放在 `STFCHESS_TOOLCHAIN_ROOT` 下（commons-lang3 请用 3.12.0：3.18.0 会让 build-tools 34 自带的 D8 崩溃）：
+
+```bash
+STFCHESS_TOOLCHAIN_ROOT=/path/to/toolchain python3 tools/build_apk.py
+```
+
 ```bat
 .venv\Scripts\python -m pip install -r requirements-dev.txt
 .venv\Scripts\python -m unittest discover -s tests -v

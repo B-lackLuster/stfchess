@@ -28,7 +28,7 @@ public class ChessServer extends NanoHTTPD {
     private final Map<String, JSONObject> jobs = new ConcurrentHashMap<>();
 
     public ChessServer(int port, Assets assets, UciEngine engine) throws IOException {
-        super(port);
+        super("127.0.0.1", port); // 只给本机 WebView 用，不对局域网开放
         this.assets = assets;
         this.engine = engine;
         start(NanoHTTPD.SOCKET_READ_TIMEOUT, false);
