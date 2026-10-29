@@ -311,7 +311,13 @@ def export_pgn(
             if an.get("best_san") and an["best_san"] != an.get("san"):
                 parts.append(f"最佳: {an['best_san']} ({an.get('best_score', '')})")
             loss = an.get("cp_loss") or 0
-            parts.append("送杀" if loss > 90000 else f"损失 {loss}厘兵")
+            if loss > 90000:
+                # 巨额损失：走完被对手强制杀（送杀），或错过了自己的强制杀
+                after = an.get("eval_white_after", 0)
+                mover_after = after if an.get("color", "w") == "w" else -after
+                parts.append("送杀" if mover_after <= -(MATE_CP - 1000) else "错失杀棋")
+            else:
+                parts.append(f"损失 {loss}厘兵")
             cls = CLASS_LABELS.get(an["cls"], "")
             node.comment = f"[%eval {cp_to_display(an.get('eval_white_after', 0))}] {cls} {' '.join(parts)}"
     return str(game)

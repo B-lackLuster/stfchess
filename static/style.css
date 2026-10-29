@@ -830,6 +830,38 @@ summary {
 body.modal-open {
   overflow: hidden;
 }
+.modal-actions {
+  display: flex;
+  gap: 8px;
+}
+.modal-actions button {
+  flex: 1;
+}
+#toast {
+  position: fixed;
+  left: 50%;
+  bottom: 28px;
+  transform: translateX(-50%);
+  z-index: 120;
+  max-width: min(90vw, 440px);
+  padding: 9px 16px;
+  border-radius: 999px;
+  background: var(--text);
+  color: #fff;
+  font-size: 12px;
+  box-shadow: 0 10px 30px #142b2340;
+  pointer-events: none;
+  animation: toastIn 0.18s ease-out;
+}
+#toast.error {
+  background: #ae493e;
+}
+@keyframes toastIn {
+  from {
+    opacity: 0;
+    transform: translate(-50%, 6px);
+  }
+}
 @media (min-width: 1100px) and (max-height: 850px) {
   #main {
     grid-template-columns: minmax(0, 480px) minmax(0, 380px);
