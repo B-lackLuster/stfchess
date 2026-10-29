@@ -2,8 +2,8 @@
 "use strict";
 
 const START_FEN = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
-const GLYPH = { k: "♚", q: "♛", r: "♜", b: "♝", n: "♞", p: "♟" };
-const GLYPH_KING = "♚", GLYPH_PAWN = "♟";
+const SVG_NS = "http://www.w3.org/2000/svg";
+const PIECE_NAME = { k: "王", q: "后", r: "车", b: "象", n: "马", p: "兵" };
 const FILES = ["a", "b", "c", "d", "e", "f", "g", "h"];
 const CLS_LABEL = {
   best: "最佳", excellent: "优秀", good: "良好",
@@ -240,22 +240,21 @@ function renderWorkspace() {
     document.getElementById(id).classList.toggle("active", active);
     document.getElementById(id).setAttribute("aria-pressed", String(active));
   });
-  $("#mode-caption").textContent = S.vsEngine ? "与引擎对弈，边下边学" : "探索局面，找到更好的着法";
   const top = S.flipped ? "w" : "b";
   [["top", top], ["bottom", top === "w" ? "b" : "w"]].forEach(([place, color]) => {
     const name = S.headers[color === "w" ? "White" : "Black"];
     document.getElementById(place + "-player").textContent = name && name !== "?" ? name : color === "w" ? "白方" : "黑方";
     document.getElementById(place + "-detail").textContent = S.vsEngine ? (color === S.engineSide ? "Stockfish · " + $("#engine-level").selectedOptions[0].text : "你 · " + (color === "w" ? "执白" : "执黑")) : "自由分析";
-    document.getElementById(place + "-avatar").classList.toggle("white", color === "w");
+    document.querySelector(`#${place}-avatar svg`).setAttribute("class", "pc " + color);
   });
-  $("#top-side").textContent = top === "w" ? "WHITE" : "BLACK";
   $("#move-count").textContent = S.history.length + " 步";
   $("#moves-empty").hidden = S.history.length > 0;
   $("#report-empty").hidden = !!S.analysisResult;
   $("#graphwrap").hidden = !S.analysisResult;
   $("#accuracy").style.display = S.analysisResult ? "flex" : "none";
-  $("#btn-start").disabled = $("#btn-prev").disabled = S.cursor === 0;
-  $("#btn-next").disabled = $("#btn-end").disabled = S.cursor === S.history.length;
+  // 导航按钮有两组：右侧面板（桌面）和棋盘下方（手机）
+  document.querySelectorAll('[data-nav="start"], [data-nav="prev"]').forEach((b) => { b.disabled = S.cursor === 0; });
+  document.querySelectorAll('[data-nav="next"], [data-nav="end"]').forEach((b) => { b.disabled = S.cursor === S.history.length; });
   // 悔棋只撤销最后的着法；浏览中途局面时禁用，避免误删后面的整段棋谱
   const atEnd = S.cursor === S.history.length;
   $("#btn-undo").disabled = S.cursor === 0 || S.busy || !atEnd;
@@ -316,16 +315,26 @@ function flipMove(el, oldRect) {
   el.addEventListener("transitionend", () => { el.style.transition = ""; }, { once: true });
 }
 
+// 棋子用 index.html 里的 SVG 图形（#pc-k 等），各平台显示一致，不依赖系统字体
+function pieceSvg(color, type) {
+  const svg = document.createElementNS(SVG_NS, "svg");
+  svg.setAttribute("class", "pc " + color);
+  svg.setAttribute("viewBox", "1.5 1.8 42 42");
+  svg.setAttribute("aria-hidden", "true");
+  svg.dataset.p = color + type;
+  const use = document.createElementNS(SVG_NS, "use");
+  use.setAttribute("href", "#pc-" + type);
+  svg.appendChild(use);
+  return svg;
+}
+
 function spawnFade(el) {
   const wrap = $("#boardwrap");
   const wr = wrap.getBoundingClientRect();
   const r = el.getBoundingClientRect();
-  const ghost = document.createElement("span");
-  ghost.className = "pc fadeout " + (el.classList.contains("w") ? "w" : "b");
-  ghost.textContent = el.textContent;
-  ghost.style.fontSize = getComputedStyle(el).fontSize;
-  ghost.style.left = (r.left - wr.left) + "px";
-  ghost.style.top = (r.top - wr.top) + "px";
+  const ghost = el.cloneNode(true);
+  ghost.classList.add("fadeout");
+  ghost.style.cssText = `left:${r.left - wr.left}px;top:${r.top - wr.top}px;width:${r.width}px;height:${r.height}px`;
   wrap.appendChild(ghost);
   setTimeout(() => ghost.remove(), 340);
 }
@@ -371,7 +380,7 @@ function renderBoard() {
       // 被吃棋子淡出（含吃过路兵）
       if (forward) {
         let capSq = to;
-        if (originEl.textContent === GLYPH_PAWN && from[0] !== to[0] && !pieceAt(_lastRendered.fen, to)) {
+        if (originEl.dataset.p[1] === "p" && from[0] !== to[0] && !pieceAt(_lastRendered.fen, to)) {
           capSq = to[0] + from[1];
         }
         const capEl = board.querySelector(`.sq[data-square="${capSq}"] .pc`);
@@ -379,7 +388,7 @@ function renderBoard() {
       }
       anims.push({ destSq, rect: originEl.getBoundingClientRect() });
       // 王车易位：车同步滑动
-      if (originEl.textContent === GLYPH_KING) {
+      if (originEl.dataset.p[1] === "k") {
         const ff = FILES.indexOf(from[0]), tf = FILES.indexOf(to[0]);
         if (Math.abs(ff - tf) === 2) {
           const rank = from[1];
@@ -397,12 +406,9 @@ function renderBoard() {
     const p = pieceAt(fen, sq);
     const cur = sqEl.querySelector(".pc");
     if (p) {
-      if (!cur || cur.textContent !== GLYPH[p.type] || !cur.classList.contains(p.color)) {
+      if (!cur || cur.dataset.p !== p.color + p.type) {
         if (cur) cur.remove();
-        const pc = document.createElement("span");
-        pc.className = "pc " + p.color;
-        pc.textContent = GLYPH[p.type];
-        sqEl.appendChild(pc);
+        sqEl.appendChild(pieceSvg(p.color, p.type));
       }
       sqEl.classList.add("haspc");
     } else if (cur) {
@@ -490,18 +496,18 @@ function showPromo(from, to) {
   promo.innerHTML = "";
   ["q", "r", "b", "n"].forEach((t) => {
     const b = document.createElement("button");
-    b.textContent = GLYPH[t];
-    b.setAttribute("aria-label", {q:"升变为后",r:"升变为车",b:"升变为象",n:"升变为马"}[t]);
-    if (color === "w") b.style.color = "#fafafa";
+    b.appendChild(pieceSvg(color, t));
+    b.setAttribute("aria-label", "升变为" + PIECE_NAME[t]);
     b.onclick = () => { promo.hidden = true; doUserMove(from, to, t); };
     promo.appendChild(b);
   });
   const coord = squareCoord(to);
   const wrap = $("#boardwrap");
   const w = wrap.clientWidth / 8;
+  // 一格宽、四格高，正好盖住升变格所在的那一列
   promo.style.width = w + "px";
-  promo.style.left = Math.min(coord.x * w, wrap.clientWidth - w - 4) + "px";
-  promo.style.top = (coord.y < 4 ? coord.y * w : wrap.clientHeight - 4 * w - 4) + "px";
+  promo.style.left = coord.x * w + "px";
+  promo.style.top = (coord.y < 4 ? coord.y : coord.y - 3) * w + "px";
   promo.hidden = false;
 }
 
@@ -664,11 +670,16 @@ function renderLines(lines) {
     div.append(sc, pv, meta);
     wrap.appendChild(div);
   });
-  // 评估条
   const cp = lines[0].cp_white;
-  const wp = winp(cp);
-  $("#evalfill").style.width = wp.toFixed(1) + "%";
-  $("#evaltext").textContent = terminalScore(lines[0]) || fmtEval(cp);
+  setEvalBar(cp, terminalScore(lines[0]) || fmtEval(cp));
+}
+
+// 评估条：分数显示在领先一方的那一侧，避免压在黑白交界处看不清
+function setEvalBar(cpWhite, text) {
+  $("#evalfill").style.width = winp(cpWhite).toFixed(1) + "%";
+  const t = $("#evaltext");
+  t.textContent = text;
+  t.classList.toggle("black-ahead", cpWhite < 0);
 }
 
 function pvText(pvSan, fen) {
@@ -1069,7 +1080,7 @@ function renderGraph() {
   if (points.length < 2) {
     const t = document.createElementNS("http://www.w3.org/2000/svg", "text");
     t.setAttribute("x", "50%"); t.setAttribute("y", "50%");
-    t.setAttribute("fill", "#9aa1af"); t.setAttribute("text-anchor", "middle");
+    t.setAttribute("fill", "#8a948b"); t.setAttribute("text-anchor", "middle");
     t.setAttribute("dominant-baseline", "middle");
     t.setAttribute("font-size", "12");
     t.textContent = "运行「分析整局」后显示评估曲线";
@@ -1081,53 +1092,40 @@ function renderGraph() {
   const Y = (cp) => h - (winp(cp) / 100) * h;
   const NS = "http://www.w3.org/2000/svg";
 
-  // 黑方区域底色
+  // 底色代表黑方优势，曲线以下的白色面积代表白方优势
   const bg = document.createElementNS(NS, "rect");
   bg.setAttribute("x", 0); bg.setAttribute("y", 0);
   bg.setAttribute("width", w); bg.setAttribute("height", h);
-  bg.setAttribute("fill", "#101216");
+  bg.setAttribute("fill", "#3a4a42");
   svg.appendChild(bg);
 
-  // 面积多边形（曲线到底边），白色部分直接填充，黑方部分用 clip
   const poly = points.map((p) => `${X(p.ply)},${Y(p.cp)}`).join(" ");
   const areaPts = `${pad},${h} ${poly} ${w - pad},${h}`;
   const areaW = document.createElementNS(NS, "polygon");
   areaW.setAttribute("points", areaPts);
-  areaW.setAttribute("fill", "#e9e9e9");
+  areaW.setAttribute("fill", "#f7f5ee");
   svg.appendChild(areaW);
-
-  const clip = document.createElementNS(NS, "clipPath");
-  clip.setAttribute("id", "belowclip");
-  const cr = document.createElementNS(NS, "rect");
-  cr.setAttribute("x", 0); cr.setAttribute("y", h / 2);
-  cr.setAttribute("width", w); cr.setAttribute("height", h / 2);
-  clip.appendChild(cr);
-  svg.appendChild(clip);
-
-  const areaB = document.createElementNS(NS, "polygon");
-  areaB.setAttribute("points", areaPts);
-  areaB.setAttribute("fill", "#05070a");
-  areaB.setAttribute("clip-path", "url(#belowclip)");
-  svg.appendChild(areaB);
 
   // 中线与曲线
   const mid = document.createElementNS(NS, "line");
   mid.setAttribute("x1", pad); mid.setAttribute("x2", w - pad);
   mid.setAttribute("y1", h / 2); mid.setAttribute("y2", h / 2);
-  mid.setAttribute("stroke", "#3a4050");
+  mid.setAttribute("stroke", "#8a968e");
   mid.setAttribute("stroke-width", 1);
+  mid.setAttribute("stroke-dasharray", "3 3");
   svg.appendChild(mid);
 
   const curve = document.createElementNS(NS, "polyline");
   curve.setAttribute("points", poly);
   curve.setAttribute("fill", "none");
-  curve.setAttribute("stroke", "#e5b84b");
-  curve.setAttribute("stroke-width", 1.6);
+  curve.setAttribute("stroke", "#c08a2e");
+  curve.setAttribute("stroke-width", 1.8);
+  curve.setAttribute("stroke-linejoin", "round");
   svg.appendChild(curve);
 
   // 悬停参考线
   const guide = document.createElementNS(NS, "line");
-  guide.setAttribute("stroke", "#7aa2f7");
+  guide.setAttribute("stroke", "#376650");
   guide.setAttribute("stroke-width", 1);
   guide.setAttribute("y1", 0); guide.setAttribute("y2", h);
   guide.setAttribute("visibility", "hidden");
@@ -1180,9 +1178,10 @@ function renderStatus() {
 }
 
 function renderStepInfo() {
-  $("#stepinfo").textContent = S.history.length
+  const text = S.history.length
     ? `${S.cursor} / ${S.history.length} 步`
     : "起始局面";
+  document.querySelectorAll(".stepinfo").forEach((el) => { el.textContent = text; });
 }
 
 function renderAll() {
@@ -1197,8 +1196,7 @@ function renderAll() {
   else {
     renderLines(null);
     $("#evalhint").textContent = "正在评估当前局面…";
-    $("#evaltext").textContent = "—";
-    $("#evalfill").style.width = "50%";
+    setEvalBar(0, "—");
   }
 }
 
@@ -1241,10 +1239,8 @@ function bindEvents() {
     renderBoard();
   }, true);
 
-  $("#btn-start").onclick = () => setCursor(0);
-  $("#btn-prev").onclick = () => setCursor(S.cursor - 1);
-  $("#btn-next").onclick = () => setCursor(S.cursor + 1);
-  $("#btn-end").onclick = () => setCursor(S.history.length);
+  const navTo = { start: () => 0, prev: () => S.cursor - 1, next: () => S.cursor + 1, end: () => S.history.length };
+  document.querySelectorAll("[data-nav]").forEach((b) => { b.onclick = () => setCursor(navTo[b.dataset.nav]()); });
 
   $("#btn-new").onclick = async () => {
     S.importGen++;
@@ -1425,7 +1421,9 @@ function onBoardPointerMove(ev) {
     const el = _drag.el;
     if (!el) return;
     el.classList.add("dragging");
-    el.style.width = el.getBoundingClientRect().width + "px";
+    const size = el.getBoundingClientRect();
+    el.style.width = size.width + "px";
+    el.style.height = size.height + "px";
     el.style.position = "fixed";
     el.style.zIndex = 60;
     el.style.pointerEvents = "none";
