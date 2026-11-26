@@ -8,7 +8,7 @@ function deferred() {
   const promise = new Promise(done => { resolve = done; });
   return {promise, resolve};
 }
-function app() {
+function app({realLegal = false} = {}) {
   const nodes = new Map();
   const handlers = {};
   const node = id => {
@@ -26,9 +26,10 @@ function app() {
   vm.runInContext(fs.readFileSync('static/app.js','utf8').replace(/init\(\);\s*$/, ''), ctx);
   vm.runInContext(`
     renderAll = renderWorkspace = renderBoard = renderStatus = cancelDrag = clearHint = () => {};
-    refreshLegal = async () => true; scheduleAnalyze = () => {};
+    scheduleAnalyze = () => {};
     selectPanel = () => {}; S.badgeOn = false;
   `, ctx);
+  if (!realLegal) vm.runInContext('refreshLegal = async () => true', ctx);
   return {ctx, run:code=>vm.runInContext(code,ctx),node,handlers};
 }
 
@@ -139,4 +140,77 @@ test('arrow shortcuts still work after focusing a navigation button',()=>{
   assert.equal(prevented,true);
   handlers.keydown({key:'ArrowLeft',target:{tagName:'SELECT'},preventDefault(){}});
   assert.deepEqual(ctx.cursors,[1]);
+});
+
+const afterE4 = 'rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1';
+const afterE5 = 'rnbqkbnr/pppp1ppp/8/4p3/4P3/8/PPPP1PPP/RNBQKBNR w KQkq - 0 2';
+
+test('importing a playable PGN or FEN resumes the engine on its turn', async () => {
+  for (const format of ['PGN', 'FEN']) {
+    const {ctx, run, node} = app({realLegal: true});
+    const engineFens = [];
+    ctx.apiStub = async (path, body) => {
+      if (path === '/api/games/parse') return {
+        initial_fen: run('START_FEN'), headers: {Result: '*'}, result: '*',
+        moves: [{san: 'e4', uci: 'e2e4', fen_after: afterE4, color: 'w'}],
+      };
+      if (path === '/api/position/moves') return {moves: [{}], turn: body.fen.split(' ')[1]};
+      assert.equal(path, '/api/engine/move');
+      engineFens.push(body.fen);
+      return {san: 'e5', uci: 'e7e5', fen_after: afterE5, color: 'b'};
+    };
+    node('#pgn').value = '1. e4 *';
+    node('#fen').value = afterE4;
+    run('api = apiStub; closeModal = () => {}; S.vsEngine = true');
+    await run(format === 'PGN' ? 'importPGN()' : 'loadFEN()');
+    assert.deepEqual(engineFens, [afterE4], format);
+    assert.equal(run('curFen()'), afterE5);
+  }
+});
+
+test('switching to play waits for the draw decision before asking the engine to move', async () => {
+  const {ctx, run} = app({realLegal: true});
+  const legal = deferred();
+  const calls = [];
+  ctx.apiStub = async path => {
+    calls.push(path);
+    if (path === '/api/position/moves') return legal.promise;
+    throw new Error('Unexpected engine request');
+  };
+  run("api = apiStub; S.initialFen = '8/8/8/8/8/8/K7/7k w - - 0 1'; S.engineSide = 'w'");
+  const switching = run('changeMode(true)');
+  legal.resolve({moves: [{}], turn: 'w', over: true, result: '1/2-1/2', reason: '子力不足'});
+  await switching;
+  await new Promise(setImmediate);
+  assert.deepEqual(calls, ['/api/position/moves']);
+  assert.equal(run('S.gameOver'), true);
+});
+
+test('enabling play during review preserves the recorded continuation', async () => {
+  const {ctx, run} = app();
+  ctx.engineCalls = [];
+  run(`S.engineSide = 'w'; S.history = [{uci:'e2e4', fenAfter:${JSON.stringify(afterE4)}}];
+    api = async path => { engineCalls.push(path); throw new Error('Unexpected engine request'); }`);
+  await run('changeMode(true)');
+  assert.deepEqual(ctx.engineCalls, []);
+  assert.equal(run('S.cursor'), 0);
+  assert.equal(run('S.history.length'), 1);
+});
+
+test('a finished PGN stays intact even when the board still has legal moves', async () => {
+  const {ctx, run, node} = app({realLegal: true});
+  const calls = [];
+  ctx.apiStub = async (path) => {
+    calls.push(path);
+    if (path === '/api/games/parse') return {
+      initial_fen: run('START_FEN'), headers: {Result: '1-0'}, result: '1-0',
+      moves: [{san: 'e4', uci: 'e2e4', fen_after: afterE4, color: 'w'}],
+    };
+    return {moves: [{}], turn: 'b'};
+  };
+  node('#pgn').value = '1. e4 1-0';
+  run('api = apiStub; closeModal = () => {}; S.vsEngine = true');
+  await run('importPGN()');
+  assert.deepEqual(calls, ['/api/games/parse', '/api/position/moves']);
+  assert.equal(run('S.headers.Result'), '1-0');
 });

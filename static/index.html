@@ -5,8 +5,8 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <meta name="theme-color" content="#f4f3ee" />
     <title>stfchess · 棋局研究室</title>
-    <link rel="stylesheet" href="/static/style.css?v=6" />
-    <link rel="icon" href="/static/icon.png" />
+    <link rel="stylesheet" href="/static/style.css?v=7" />
+    <link rel="icon" type="image/png" href="/static/icon.png?v=2" />
   </head>
   <body>
     <svg class="sprite" aria-hidden="true" focusable="false">
@@ -80,11 +80,10 @@
     </svg>
     <div id="app">
       <header class="app-header">
-        <a class="brand" href="/" aria-label="stfchess 首页"
-          ><span class="logo"
-            ><svg class="pc w" viewBox="1.5 1.8 42 42" aria-hidden="true"><use href="#pc-n" /></svg></span
-          ><span class="brand-text">stfchess<small>棋局研究室</small></span></a
-        >
+        <a class="brand" href="/" aria-label="stfchess 首页">
+          <img class="logo" src="/static/icon.png?v=2" width="38" height="38" alt="" />
+          <span class="brand-text">stfchess<small>棋局研究室</small></span>
+        </a>
         <div class="connection">
           <span id="conn" role="status">连接中</span
           ><span id="engine-name">Stockfish</span>
@@ -414,6 +413,6 @@
       </div>
     </div>
     <div id="toast" role="status" aria-live="polite" hidden></div>
-    <script src="/static/app.js?v=14"></script>
+    <script src="/static/app.js?v=15"></script>
   </body>
 </html>

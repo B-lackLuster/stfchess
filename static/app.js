@@ -523,13 +523,12 @@ async function doUserMove(from, to, promotion) {
     const r = await api("/api/position/move", { fen: preFen, from, to, promotion: promotion || undefined });
     if (gen !== S.positionGen) return;
     if (S.badgeOn) S._pendingEval = { preFen, uci: r.uci, depth };
-    applyMove(r);
+    await applyMove(r);
   } catch (e) {
     if (gen === S.positionGen) notify(`走子失败: ${e.message}`, true);
   } finally {
     endAction(token);
   }
-  maybeEngineMove();
 }
 
 function applyMove(r) {
@@ -554,8 +553,9 @@ function applyMove(r) {
     S.gameOver = true;
   }
   playMoveSound(r);
-  afterPositionChange();
+  const refreshed = afterPositionChange();
   if (pe) scheduleMoveBadge(pe.preFen, pe.uci, pe.depth);
+  return refreshed;
 }
 
 function invalidateJob() {
@@ -569,7 +569,7 @@ function invalidateJob() {
 }
 
 async function afterPositionChange() {
-  S.positionGen++;
+  const gen = ++S.positionGen;
   S.actionGen++;
   S.busy = false;
   S.thinking = false;
@@ -586,7 +586,10 @@ async function afterPositionChange() {
   const badge = $("#movebadge");
   if (badge) badge.remove();
   renderAll();
-  if (await refreshLegal()) scheduleAnalyze();
+  if (await refreshLegal() && gen === S.positionGen) {
+    scheduleAnalyze();
+    await maybeEngineMove();
+  }
 }
 
 /* ---------------- 导航 ---------------- */
@@ -782,29 +785,31 @@ async function hint() {
 /* ---------------- 人机对弈 ---------------- */
 async function maybeEngineMove(force = false) {
   if (S.busy || S.gameOver) return;
-  if (!force && (!S.vsEngine || fenTurn(curFen()) !== S.engineSide)) return;
+  if (!force) {
+    if (!S.vsEngine || fenTurn(curFen()) !== S.engineSide) return;
+    // 只在未结束的棋谱末尾自动应答，避免覆盖复盘中的后续着法。
+    if (S.cursor !== S.history.length || (S.headers.Result && S.headers.Result !== "*")) return;
+  }
   const gen = S.positionGen;
   const token = beginAction();
   S.thinking = true;
   renderStatus();
-  let moved = false;
   try {
     const preFen = curFen();
     const depth = +$("#depth").value;
     const r = await api("/api/engine/move", { fen: preFen, level: +$("#engine-level").value });
     if (gen !== S.positionGen) return;
     if (S.badgeOn) S._pendingEval = { preFen, uci: r.uci, depth };
-    applyMove(r);
-    moved = true;
+    await applyMove(r);
   } catch (e) {
     if (gen === S.positionGen) notify("引擎走子失败: " + e.message, true);
   } finally {
-    if (gen === S.positionGen || moved) S.thinking = false;
-    endAction(token);
-    renderStatus();
+    if (gen === S.positionGen) {
+      S.thinking = false;
+      endAction(token);
+      renderStatus();
+    }
   }
-  // 人机对弈中让引擎替自己走了一步后，轮到引擎一方时由它继续应着
-  if (moved) await maybeEngineMove();
 }
 
 /* ---------------- 棋盘方向 ---------------- */
@@ -1258,7 +1263,6 @@ function bindEvents() {
     notify("新对局开始");
     applyOrientation();
     await afterPositionChange();
-    maybeEngineMove();
   };
 
   $("#btn-undo").onclick = () => {
@@ -1275,7 +1279,7 @@ function bindEvents() {
     S._pendingEval = null;
     clearReport();
     clearHint();
-    afterPositionChange().then(() => maybeEngineMove());
+    return afterPositionChange();
   };
 
   $("#btn-flip").onclick = () => {
@@ -1307,9 +1311,8 @@ function bindEvents() {
   };
   $("#engine-side").onchange = (e) => {
     S.engineSide = e.target.value;
-    afterPositionChange();
     applyOrientation();
-    maybeEngineMove();
+    return afterPositionChange();
   };
 
   $("#depth").onchange = () => {
@@ -1356,9 +1359,8 @@ function bindEvents() {
 function changeMode(enabled) {
   S.vsEngine = enabled;
   $("#chk-vs-engine").checked = enabled;
-  afterPositionChange();
   applyOrientation();
-  if (enabled) maybeEngineMove();
+  return afterPositionChange();
 }
 
 /* ---------------- 棋盘拖拽 / 点击走子（鼠标与触屏统一 Pointer Events） ---------------- */
